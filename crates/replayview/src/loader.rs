@@ -79,7 +79,7 @@ fn load(store: &AssetStore, map: &ReplayMap, vehicles: &[String], key: String) -
     let parts = map_scene.iter().flat_map(|m| m.parts.iter()).chain(vehicle_meshes.values().flat_map(|v| v.parts.iter()));
     for part in parts {
         if let Surface::Textured(MaterialSpec::Textured { textures: slots, .. }) = &part.surface {
-            for path in [&slots.diffuse, &slots.specular, &slots.blend2, &slots.blend_intensity, &slots.blend3].into_iter().flatten() {
+            for path in [&slots.diffuse, &slots.normal, &slots.specular, &slots.blend2, &slots.blend_intensity, &slots.blend3].into_iter().flatten() {
                 if !textures.contains_key(path) {
                     if let Ok(Some(t)) = store.texture(path) {
                         textures.insert(path.clone(), t);

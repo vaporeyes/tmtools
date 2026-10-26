@@ -1,5 +1,5 @@
 // ABOUTME: Shaders for the textured 3D view: lit and fogged map and car parts, the mood's sky gradient, and colored overlays.
-// ABOUTME: Lighting follows three.js as the web viewer uses it: Lambert diffuse, plus Blinn-Phong highlights for Phong materials.
+// ABOUTME: Lighting follows three.js as the web viewer uses it: Lambert diffuse, Blinn-Phong highlights, and normal maps.
 
 struct Frame {
     view_proj: mat4x4<f32>,
@@ -35,6 +35,7 @@ const EMISSIVE: u32 = 64u;
 const FIXED_OPACITY: u32 = 128u;
 const PHONG: u32 = 256u;
 const HAS_SPECULAR: u32 = 512u;
+const HAS_NORMAL: u32 = 1024u;
 // three.js MeshPhongMaterial defaults: specular color 0x111111 and shininess 30
 const SPECULAR_COLOR: f32 = 0.0056;
 const SHININESS: f32 = 30.0;
@@ -48,6 +49,7 @@ const PI: f32 = 3.14159265;
 @group(1) @binding(4) var blend3_tex: texture_2d<f32>;
 @group(1) @binding(5) var tex_sampler: sampler;
 @group(1) @binding(6) var specular_tex: texture_2d<f32>;
+@group(1) @binding(7) var normal_tex: texture_2d<f32>;
 
 struct VertexIn {
     @location(0) position: vec3<f32>,
@@ -64,6 +66,8 @@ struct VertexOut {
     @location(0) world: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
+    // The mesh's own UVs, which normal maps use even where the color map uses world-space UVs
+    @location(3) mesh_uv: vec2<f32>,
 }
 
 fn has(flag: u32) -> bool {
@@ -86,6 +90,7 @@ fn vs_main(v: VertexIn) -> VertexOut {
         uv.y = 1.0 - uv.y;
     }
     out.uv = uv;
+    out.mesh_uv = v.uv;
     return out;
 }
 
@@ -103,6 +108,13 @@ fn fs_ghost(in: VertexOut, @builtin(front_facing) front: bool) -> @location(0) v
 }
 
 fn shade(in: VertexOut, front: bool) -> vec4<f32> {
+    // Derivatives and samples first, while every fragment of the quad still runs them
+    let normal_sample = textureSample(normal_tex, tex_sampler, in.mesh_uv).xyz;
+    // WGSL's screen y runs down where WebGL's runs up; negating keeps three.js's tangent frame
+    let q0 = dpdx(in.world);
+    let q1 = -dpdy(in.world);
+    let st0 = dpdx(in.mesh_uv);
+    let st1 = -dpdy(in.mesh_uv);
     var albedo = material.color;
     if has(HAS_DIFFUSE) {
         albedo = albedo * textureSample(diffuse_tex, tex_sampler, in.uv);
@@ -130,6 +142,18 @@ fn shade(in: VertexOut, front: bool) -> vec4<f32> {
         var n = normalize(in.normal);
         if !front {
             n = -n;
+        }
+        if has(HAS_NORMAL) {
+            // three.js getTangentFrame: a tangent and bitangent from how position and UV change across the pixel
+            let face = select(-1.0, 1.0, front);
+            let q1perp = cross(q1, n);
+            let q0perp = cross(n, q0);
+            let t = q1perp * st0.x + q0perp * st1.x;
+            let b = q1perp * st0.y + q0perp * st1.y;
+            let det = max(dot(t, t), dot(b, b));
+            let scale = select(inverseSqrt(det), 0.0, det == 0.0);
+            let map_n = normal_sample * 2.0 - 1.0;
+            n = normalize(t * scale * face * map_n.x + b * scale * face * map_n.y + n * map_n.z);
         }
         let hemisphere = mix(frame.ground_ambient.rgb, frame.sky_ambient.rgb, 0.5 * n.y + 0.5);
         let sun = frame.sun_color.rgb * max(dot(n, frame.sun_dir.xyz), 0.0);

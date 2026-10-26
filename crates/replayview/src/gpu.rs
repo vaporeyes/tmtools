@@ -30,6 +30,7 @@ const EMISSIVE: u32 = 64;
 const FIXED_OPACITY: u32 = 128;
 const PHONG: u32 = 256;
 const HAS_SPECULAR: u32 = 512;
+const HAS_NORMAL: u32 = 1024;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -211,6 +212,7 @@ impl Renderer {
                 texture_entry(4),
                 wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
                 texture_entry(6),
+                texture_entry(7),
             ],
         });
         let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -413,6 +415,11 @@ impl Renderer {
                     ),
                     None => (None, None, None, None, None),
                 };
+                // Normal maps are directions, not colors; unlit materials have no use for them
+                let normal = slots.as_ref().filter(|_| uniform.flags & UNLIT == 0).and_then(|s| view(s.normal.as_ref(), false));
+                if normal.is_some() {
+                    uniform.flags |= HAS_NORMAL;
+                }
                 if specular.is_some() && uniform.flags & PHONG != 0 {
                     uniform.flags |= HAS_SPECULAR;
                 }
@@ -428,7 +435,7 @@ impl Renderer {
                 let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("material"), contents: bytemuck::bytes_of(&uniform), usage: wgpu::BufferUsages::UNIFORM });
                 let white = &self.white;
                 let pick = |v: &Option<Arc<wgpu::TextureView>>| v.as_ref().map_or(white, |v| v.as_ref()).clone();
-                let views = [pick(&diffuse), pick(&blend2), pick(&blend_i), pick(&blend3), pick(&specular)];
+                let views = [pick(&diffuse), pick(&blend2), pick(&blend_i), pick(&blend3), pick(&specular), pick(&normal)];
                 let group = Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("material"),
                     layout: &self.material_layout,
@@ -440,6 +447,7 @@ impl Renderer {
                         wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&views[3]) },
                         wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                         wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&views[4]) },
+                        wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&views[5]) },
                     ],
                 }));
                 self.materials.insert(key, group.clone());
