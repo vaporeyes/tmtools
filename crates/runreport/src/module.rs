@@ -76,7 +76,7 @@ impl Module for RunReportModule {
 
 impl RunReportModule {
     fn export_section(&mut self, ui: &mut egui::Ui, session: &Session, focus: usize) {
-        ui.horizontal_wrapped(|ui| {
+        tmtools_core::toolbar(ui, |ui| {
             ui.strong("Export the focused run:");
             let has_inputs = session.runs[focus].track.is_some();
             let mut chosen = None;

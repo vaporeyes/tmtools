@@ -87,7 +87,7 @@ impl Module for TrajMapModule {
         };
 
         let mut fit = !self.fitted;
-        ui.horizontal_wrapped(|ui| {
+        tmtools_core::toolbar(ui, |ui| {
             fit |= ui.button("Fit runs").clicked();
             ui.checkbox(&mut self.follow, "Follow focused car");
             ui.separator();

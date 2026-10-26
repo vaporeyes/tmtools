@@ -47,7 +47,7 @@ impl Module for GbxInspectModule {
         }
         self.file = self.file.min(session.files.len() - 1);
 
-        ui.horizontal(|ui| {
+        tmtools_core::toolbar(ui, |ui| {
             ui.label("File");
             // Map names first; the file name tells apart replays of the same map
             let label = |f: &tmtools_core::LoadedFile| if f.title() == f.name { f.name.clone() } else { format!("{} ({})", f.title(), f.name) };
@@ -62,7 +62,7 @@ impl Module for GbxInspectModule {
             }
             ui.add_enabled(has_map, egui::Checkbox::new(&mut self.embedded, "Embedded map"));
         });
-        ui.separator();
+        ui.add_space(6.0);
 
         let file = &session.files[self.file];
         let source = (Arc::as_ptr(&file.bytes) as usize, self.embedded);

@@ -85,7 +85,7 @@ impl Module for InputScopeModule {
         }
 
         self.toolbar(ui, session, focus);
-        ui.separator();
+        ui.add_space(6.0);
 
         let mut rows: Vec<usize> = vec![focus];
         rows.extend(self.compare);
@@ -115,7 +115,7 @@ impl Module for InputScopeModule {
 
 impl InputScopeModule {
     fn toolbar(&mut self, ui: &mut egui::Ui, session: &Session, focus: usize) {
-        ui.horizontal_wrapped(|ui| {
+        tmtools_core::toolbar(ui, |ui| {
             color_swatch(ui, session.runs[focus].color);
             ui.strong(&session.runs[focus].label);
             ui.separator();

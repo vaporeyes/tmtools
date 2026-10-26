@@ -2,9 +2,11 @@
 // ABOUTME: One clock is shared, so seeking in any module moves all of them.
 
 mod session;
+pub mod theme;
 
 pub use eframe::egui_wgpu::RenderState;
 pub use session::{LoadedFile, Playback, Run, Session, SPEEDS};
+pub use theme::{icon_button, section, toolbar, Icon};
 
 /// A self-contained analysis tool hosted by the tmtools shell.
 ///

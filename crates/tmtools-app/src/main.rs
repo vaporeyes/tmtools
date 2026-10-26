@@ -7,7 +7,8 @@ mod screenshot;
 use eframe::egui;
 use std::path::PathBuf;
 use tmreplay::format_race_time;
-use tmtools_core::{color_swatch, Module, Session, SPEEDS};
+use tmtools_core::theme::{self, FINISH, INK, INK_RAISED, INK_SOFT, TEXT, WEAK};
+use tmtools_core::{color_swatch, icon_button, section, Icon, Module, Session, SPEEDS};
 
 // Where the chosen asset folder is remembered between launches
 const ASSETS_KEY: &str = "assets_dir";
@@ -30,12 +31,12 @@ impl eframe::App for TmtoolsApp {
         self.handle_dropped_files(&ctx);
         self.handle_keys(&ctx);
 
-        egui::Panel::top("tmtools-tabs").show(ui, |ui| {
+        egui::Panel::top("tmtools-tabs").frame(egui::Frame::new().fill(theme::NIGHT).inner_margin(egui::Margin::symmetric(12, 8))).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("tmtools");
-                ui.separator();
+                ui.label(egui::RichText::new("tmtools").size(18.0).strong().color(FINISH));
+                ui.add_space(12.0);
                 for (i, m) in self.modules.iter().enumerate() {
-                    let tab = ui.selectable_label(self.active == i, m.name());
+                    let tab = ui.selectable_label(self.active == i, egui::RichText::new(m.name()).size(14.0));
                     if tab.on_hover_text(m.description()).clicked() {
                         self.active = i;
                     }
@@ -43,7 +44,9 @@ impl eframe::App for TmtoolsApp {
             });
         });
 
-        egui::Panel::bottom("tmtools-playback").show(ui, |ui| playback_bar(ui, &mut self.session));
+        egui::Panel::bottom("tmtools-playback")
+            .frame(egui::Frame::new().fill(theme::NIGHT).inner_margin(egui::Margin::symmetric(12, 8)))
+            .show(ui, |ui| playback_bar(ui, &mut self.session));
 
         egui::Panel::left("tmtools-runs").default_size(270.0).resizable(true).show(ui, |ui| {
             egui::Panel::bottom("tmtools-assets").show(ui, |ui| assets_panel(ui, &mut self.session));
@@ -103,60 +106,68 @@ impl TmtoolsApp {
 }
 
 fn runs_panel(ui: &mut egui::Ui, session: &mut Session) {
-    ui.add_space(4.0);
+    ui.add_space(6.0);
     ui.horizontal(|ui| {
-        if ui.button("Open...").on_hover_text("Open replays or any Gbx file; you can also drop files on the window").clicked() {
-            if let Some(paths) = rfd::FileDialog::new().add_filter("Gbx", &["gbx", "Gbx", "GBX"]).pick_files() {
-                for path in paths {
-                    session.load_path(&path);
+        section(ui, "Files");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("Open...").on_hover_text("Open replays or any Gbx file; you can also drop files on the window").clicked() {
+                if let Some(paths) = rfd::FileDialog::new().add_filter("Gbx", &["gbx", "Gbx", "GBX"]).pick_files() {
+                    for path in paths {
+                        session.load_path(&path);
+                    }
                 }
             }
-        }
-        if session.runs.len() > 1 && ui.button("Show all").clicked() {
-            session.runs.iter_mut().for_each(|r| r.visible = true);
-        }
+            if session.runs.len() > 1 && ui.button("Show all").clicked() {
+                session.runs.iter_mut().for_each(|r| r.visible = true);
+            }
+        });
     });
     if let Some(status) = &session.status {
         ui.label(egui::RichText::new(status).small().weak());
     }
-    ui.separator();
+    ui.add_space(4.0);
 
     if session.files.is_empty() {
-        ui.label("Drop .Replay.Gbx files here or use Open.");
+        ui.add_space(20.0);
+        ui.vertical_centered(|ui| ui.label(egui::RichText::new("Drop .Replay.Gbx files here\nor use Open.").color(WEAK)));
         return;
     }
 
     let mut remove = None;
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         for (f, file) in session.files.iter().enumerate() {
-            ui.horizontal(|ui| {
-                if ui.small_button("x").on_hover_text("Close this file").clicked() {
-                    remove = Some(f);
-                }
-                let path = file.path.as_ref().map_or_else(|| file.name.clone(), |p| p.display().to_string());
-                ui.label(egui::RichText::new(file.title()).strong()).on_hover_text(path);
-            });
-            // The environment and file name sit under the map name, smaller
-            let detail = match &file.replay {
-                Ok(replay) => format!("{}  {}", replay.map.environment.as_deref().unwrap_or(""), file.name),
-                Err(_) => "Not a replay; open it in the Gbx Inspector".into(),
-            };
-            ui.label(egui::RichText::new(detail.trim()).small().weak());
-            for r in 0..session.runs.len() {
-                if session.runs[r].file != f {
-                    continue;
-                }
+            // One card per file: its map, where it comes from, and its runs
+            egui::Frame::new().fill(INK_RAISED).corner_radius(6).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.add_space(12.0);
-                    ui.checkbox(&mut session.runs[r].visible, "").on_hover_text("Show this run");
-                    color_swatch(ui, session.runs[r].color);
-                    let focused = session.focus == Some(r);
-                    if ui.selectable_label(focused, &session.runs[r].label).on_hover_text("Focus this run").clicked() {
-                        session.focus = Some(r);
-                        session.runs[r].visible = true;
-                    }
+                    let path = file.path.as_ref().map_or_else(|| file.name.clone(), |p| p.display().to_string());
+                    ui.label(egui::RichText::new(file.title()).strong().color(TEXT)).on_hover_text(path);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if icon_button(ui, Icon::Close, 18.0, false, "Close this file").clicked() {
+                            remove = Some(f);
+                        }
+                    });
                 });
-            }
+                let detail = match &file.replay {
+                    Ok(replay) => format!("{}  {}", replay.map.environment.as_deref().unwrap_or(""), file.name),
+                    Err(_) => "Not a replay; open it in the Gbx Inspector".into(),
+                };
+                ui.label(egui::RichText::new(detail.trim()).small().weak());
+                for r in 0..session.runs.len() {
+                    if session.runs[r].file != f {
+                        continue;
+                    }
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut session.runs[r].visible, "").on_hover_text("Show this run");
+                        color_swatch(ui, session.runs[r].color);
+                        let focused = session.focus == Some(r);
+                        if ui.selectable_label(focused, &session.runs[r].label).on_hover_text("Focus this run").clicked() {
+                            session.focus = Some(r);
+                            session.runs[r].visible = true;
+                        }
+                    });
+                }
+            });
             ui.add_space(6.0);
         }
     });
@@ -167,8 +178,8 @@ fn runs_panel(ui: &mut egui::Ui, session: &mut Session) {
 
 /// The asset export setting, at the foot of the side panel
 fn assets_panel(ui: &mut egui::Ui, session: &mut Session) {
-    ui.separator();
-    ui.label(egui::RichText::new("Game assets").strong());
+    ui.add_space(6.0);
+    section(ui, "Game assets");
     match &session.assets {
         Some(store) => {
             ui.label(egui::RichText::new(store.root().display().to_string()).small().weak());
@@ -184,40 +195,69 @@ fn assets_panel(ui: &mut egui::Ui, session: &mut Session) {
             }
         }
     }
+    ui.add_space(4.0);
 }
 
 fn playback_bar(ui: &mut egui::Ui, session: &mut Session) {
-    ui.add_space(4.0);
     ui.horizontal(|ui| {
-        let label = if session.playback.playing { "Pause" } else { "Play" };
-        if ui.button(label).on_hover_text("Space").clicked() {
-            session.toggle_play();
+        if icon_button(ui, Icon::ToStart, 26.0, false, "Back to the start (Home)").clicked() {
+            session.seek(0.0);
         }
-        if ui.button("<").on_hover_text("Back one tick (,)").clicked() {
+        if icon_button(ui, Icon::StepBack, 26.0, false, "Back one tick (,)").clicked() {
             session.step_ticks(-1);
         }
-        if ui.button(">").on_hover_text("Forward one tick (.)").clicked() {
+        let (icon, tip) = if session.playback.playing { (Icon::Pause, "Pause (Space)") } else { (Icon::Play, "Play (Space)") };
+        if icon_button(ui, icon, 36.0, true, tip).clicked() {
+            session.toggle_play();
+        }
+        if icon_button(ui, Icon::StepForward, 26.0, false, "Forward one tick (.)").clicked() {
             session.step_ticks(1);
         }
+        ui.add_space(8.0);
 
         let duration = session.duration_ms();
-        ui.monospace(format!("{} / {}", format_race_time(session.tick_ms() as i64), format_race_time(duration as i64)));
-        ui.label(egui::RichText::new(format!("tick {}", session.tick_ms() / 10)).weak());
+        ui.label(egui::RichText::new(format_race_time(session.tick_ms() as i64)).monospace().size(20.0).color(TEXT));
+        ui.label(egui::RichText::new(format!("/ {}", format_race_time(duration as i64))).monospace().color(WEAK));
+        ui.label(egui::RichText::new(format!("tick {}", session.tick_ms() / 10)).small().color(WEAK));
+        ui.add_space(8.0);
 
-        egui::ComboBox::from_id_salt("speed").width(70.0).selected_text(format!("{}x", session.playback.speed)).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("speed").width(64.0).selected_text(format!("{}x", session.playback.speed)).show_ui(ui, |ui| {
             for speed in SPEEDS {
                 ui.selectable_value(&mut session.playback.speed, speed, format!("{speed}x"));
             }
         });
-
-        let mut time = session.playback.time_ms;
-        ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(80.0);
-        let slider = egui::Slider::new(&mut time, 0.0..=duration.max(1.0)).show_value(false);
-        if ui.add(slider).changed() {
-            session.seek(time);
-        }
+        ui.add_space(8.0);
+        timeline(ui, session, duration);
     });
-    ui.add_space(4.0);
+}
+
+/// The scrubber: progress in yellow, the focused run's checkpoints as marks; click or drag to seek
+fn timeline(ui: &mut egui::Ui, session: &mut Session, duration: f64) {
+    let width = ui.available_width().max(80.0);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 28.0), egui::Sense::click_and_drag());
+    let painter = ui.painter_at(rect.expand(8.0));
+    let track = egui::Rect::from_center_size(rect.center(), egui::vec2(rect.width() - 12.0, 6.0));
+    let x_of = |ms: f64| track.left() + (ms / duration.max(1.0)) as f32 * track.width();
+
+    painter.rect_filled(track, 3.0, INK_SOFT);
+    let done = egui::Rect::from_min_max(track.min, egui::pos2(x_of(session.playback.time_ms), track.max.y));
+    painter.rect_filled(done, 3.0, FINISH.gamma_multiply(0.8));
+    if let Some(focus) = session.focus {
+        for t in session.ghost(focus).checkpoints.iter().filter_map(|c| c.time_ms) {
+            let x = x_of(t as f64);
+            painter.line_segment([egui::pos2(x, track.top() - 6.0), egui::pos2(x, track.bottom() + 6.0)], egui::Stroke::new(2.0, TEXT));
+        }
+    }
+    painter.circle(egui::pos2(x_of(session.playback.time_ms), track.center().y), 8.0, FINISH, egui::Stroke::new(2.0, INK));
+
+    if let Some(pos) = response.interact_pointer_pos().filter(|_| response.clicked() || response.dragged()) {
+        let fraction = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0) as f64;
+        session.seek(fraction * duration);
+    }
+    if let Some(pos) = response.hover_pos() {
+        let fraction = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0) as f64;
+        response.on_hover_text_at_pointer(format_race_time((fraction * duration) as i64));
+    }
 }
 
 /// Command line: replay or Gbx paths, plus --tab NAME, --time MS, --focus N, and --assets DIR for opening straight to a view
@@ -263,6 +303,7 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             fonts::add_unicode_fallback(&cc.egui_ctx);
+            theme::apply(&cc.egui_ctx);
             let modules: Vec<Box<dyn Module>> = vec![
                 Box::new(inputscope::InputScopeModule::default()),
                 Box::new(telemetry::TelemetryModule::default()),

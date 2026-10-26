@@ -87,8 +87,9 @@ panel. It is remembered between launches; `TMTOOLS_ASSETS_DIR` or
 
 The left panel lists loaded files and their runs (ghosts). The checkbox shows
 or hides a run, and clicking a run's name makes it the focused run that
-modules analyze first. The bottom bar plays, pauses, and scrubs the shared
-clock.
+modules analyze first. The bottom bar plays, pauses, steps one tick at a
+time, and scrubs the shared clock; its timeline marks the focused run's
+checkpoints.
 
 | Key     | Action                   |
 | ------- | ------------------------ |

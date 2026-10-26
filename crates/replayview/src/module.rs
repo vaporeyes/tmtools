@@ -112,7 +112,7 @@ impl Module for ReplayViewModule {
             return;
         };
 
-        ui.horizontal(|ui| {
+        tmtools_core::toolbar(ui, |ui| {
             ui.label("Camera");
             for (mode, label) in [(CameraMode::Chase, "Chase"), (CameraMode::Orbit, "Orbit car"), (CameraMode::Overview, "Overview")] {
                 if ui.selectable_label(self.mode == mode, label).clicked() {

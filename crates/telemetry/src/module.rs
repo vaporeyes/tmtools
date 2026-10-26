@@ -69,7 +69,7 @@ impl Module for TelemetryModule {
             return;
         };
 
-        ui.horizontal_wrapped(|ui| {
+        tmtools_core::toolbar(ui, |ui| {
             for (i, graph) in Graph::ALL.into_iter().enumerate() {
                 ui.checkbox(&mut self.shown[i], graph.title());
             }
@@ -77,7 +77,7 @@ impl Module for TelemetryModule {
             ui.checkbox(&mut self.follow, "Follow playhead");
             ui.label(egui::RichText::new("Drag to pan, scroll to zoom, double-click to reset, click to seek").weak().small());
         });
-        ui.separator();
+        ui.add_space(4.0);
 
         let graphs: Vec<Graph> = Graph::ALL.into_iter().enumerate().filter(|&(i, _)| self.shown[i]).map(|(_, g)| g).collect();
         if graphs.is_empty() {
