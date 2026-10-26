@@ -3,6 +3,7 @@
 
 pub mod gap;
 pub mod grid;
+pub mod report;
 pub mod sectors;
 mod inputs;
 mod model;

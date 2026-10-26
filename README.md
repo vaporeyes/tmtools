@@ -15,7 +15,7 @@ any tab moves all of them:
   markers for braking, gas lifts, respawns, checkpoints, and sector splits.
 - **Run Report** - sector times for every run on a map, split at checkpoints
   and at points you place, with the best of each sector and the theoretical
-  best.
+  best; and every braking zone and turn with entry, slowest, and exit speeds.
 - **Replay Viewer** - the runs in 3D with the game's own meshes and textures
   (from an asset export), or a wireframe without one, with chase, orbit, and
   overview cameras and an input HUD.
@@ -149,6 +149,15 @@ Each run's time at a placed split is when it passes that point, matched in
 order along the track. The best time of each sector is highlighted, others
 show what they lose to it, and the **Best** row adds up to the theoretical
 best. Clicking a time jumps to the start of that sector for that run.
+
+**Braking and turns** lists the focused run's braking zones and turns, found
+in its tick-exact inputs: inputs of one kind less than 0.25 s apart count as
+one event, so a series of taps is one turn. Each row shows when it starts,
+how long it lasts in seconds and ticks, the speed at its start, slowest
+point, and end, the speed lost, ticks of braking within it, and how it was
+steered (one hold, taps with the share held, or the analog peak). Click the
+start or the slowest point to jump there; filter by braking and left or
+right turns.
 
 ## Replay Viewer
 

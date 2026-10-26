@@ -267,7 +267,7 @@ fn main() -> eframe::Result<()> {
                 Box::new(inputscope::InputScopeModule::default()),
                 Box::new(telemetry::TelemetryModule::default()),
                 Box::new(trajmap::TrajMapModule::default()),
-                Box::new(runreport::RunReportModule),
+                Box::new(runreport::RunReportModule::default()),
                 Box::new(replayview::ReplayViewModule::default()),
                 Box::new(gbxinspect::GbxInspectModule::default()),
             ];

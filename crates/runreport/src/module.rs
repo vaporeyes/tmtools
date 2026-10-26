@@ -1,13 +1,16 @@
-// ABOUTME: RunReportModule UI: the sector table (each run's sector times, the best of each sector, the theoretical
-// ABOUTME: best) for the focused run's map, with splits from checkpoints and points placed on the Trajectory Map.
+// ABOUTME: RunReportModule UI: the sector table (each run's sector times, the best of each sector, the theoretical best)
+// ABOUTME: for the focused run's map, and the focused run's braking zones and turns; every row jumps the clock there.
 
 use egui::{Color32, RichText};
 use tmreplay::format_race_time;
+use tmreplay::report::{events, EventKind};
 use tmreplay::sectors::{best_sectors, boundaries, boundary_times, sector_durations, Boundary};
 use tmtools_core::{color_swatch, Module, RenderState, Session};
 
 const BEST: Color32 = Color32::from_rgb(90, 220, 120);
 const LOSS: Color32 = Color32::from_rgb(240, 120, 110);
+const BRAKE: Color32 = Color32::from_rgb(229, 72, 77);
+const STEER: Color32 = Color32::from_rgb(255, 210, 63);
 
 /// A sector length in seconds with hundredths, as race times show it
 fn seconds(ms: f32) -> String {
@@ -19,8 +22,16 @@ fn loss(ms: f32) -> String {
     format!("+{:.2}", (ms / 10.0).round() / 100.0)
 }
 
-#[derive(Default)]
-pub struct RunReportModule;
+pub struct RunReportModule {
+    /// Which kinds of events the braking and turns table lists: brake, left, right
+    shown: [bool; 3],
+}
+
+impl Default for RunReportModule {
+    fn default() -> Self {
+        Self { shown: [true; 3] }
+    }
+}
 
 impl Module for RunReportModule {
     fn name(&self) -> &str {
@@ -28,7 +39,7 @@ impl Module for RunReportModule {
     }
 
     fn description(&self) -> &str {
-        "Sector times with the theoretical best for the runs on the focused run's map"
+        "Sector times with the theoretical best, and every braking zone and turn of the focused run"
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, _wgpu: Option<&RenderState>) {
@@ -36,11 +47,78 @@ impl Module for RunReportModule {
             ui.centered_and_justified(|ui| ui.label("Open a replay to see its report."));
             return;
         };
-        let seek = egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| sector_table(ui, session, focus)).inner;
+        let seek = egui::ScrollArea::vertical()
+            .auto_shrink(false)
+            .show(ui, |ui| {
+                let sector = sector_table(ui, session, focus);
+                ui.add_space(16.0);
+                let event = self.event_table(ui, session, focus);
+                sector.or(event)
+            })
+            .inner;
         if let Some(t) = seek {
             session.playback.playing = false;
             session.seek(t as f64);
         }
+    }
+}
+
+impl RunReportModule {
+    /// The focused run's braking zones and turns; returns a time to seek to when a row's start is clicked
+    fn event_table(&mut self, ui: &mut egui::Ui, session: &Session, focus: usize) -> Option<f32> {
+        ui.heading("Braking and turns");
+        let Some(track) = session.runs[focus].track.as_ref() else {
+            ui.label("The focused run has no recorded inputs.");
+            return None;
+        };
+        ui.horizontal(|ui| {
+            for (i, label) in ["Braking", "Left turns", "Right turns"].into_iter().enumerate() {
+                ui.checkbox(&mut self.shown[i], label);
+            }
+        });
+        ui.label(
+            RichText::new(format!(
+                "Inputs of one kind less than {:.2} s apart count as one event, so taps make one turn. Speeds are where the event starts, its slowest point, and where it ends.",
+                tmreplay::report::MERGE_GAP_MS as f32 / 1000.0
+            ))
+            .small()
+            .weak(),
+        );
+
+        let samples = &session.ghost(focus).samples;
+        let now = session.tick_ms();
+        let shown = |k: EventKind| self.shown[match k {
+            EventKind::Brake => 0,
+            EventKind::Left => 1,
+            EventKind::Right => 2,
+        }];
+        let mut seek = None;
+        egui::Grid::new("runreport-events").striped(true).num_columns(9).show(ui, |ui| {
+            for header in ["Start", "", "Length", "Entry", "Slowest", "Exit", "Lost", "Brake ticks", "Steering"] {
+                ui.strong(header);
+            }
+            ui.end_row();
+            for e in events(track, samples).into_iter().filter(|e| shown(e.kind)) {
+                let current = e.start_ms <= now && now < e.end_ms;
+                let start = RichText::new(format_race_time(e.start_ms as i64));
+                if ui.link(if current { start.strong() } else { start }).on_hover_text("Jump to the start of this event").clicked() {
+                    seek = Some(e.start_ms as f32);
+                }
+                ui.colored_label(if e.kind == EventKind::Brake { BRAKE } else { STEER }, e.kind.label());
+                ui.label(format!("{} ({} ticks)", seconds(e.span_ms() as f32), e.span_ms() / tmreplay::track::TICK_MS));
+                ui.label(format!("{:.0}", e.entry_kmh));
+                if ui.link(format!("{:.0} at {}", e.min_kmh, format_race_time(e.min_at_ms as i64))).on_hover_text("Jump to the slowest point").clicked() {
+                    seek = Some(e.min_at_ms as f32);
+                }
+                ui.label(format!("{:.0}", e.exit_kmh));
+                ui.label(format!("{:.0}", (e.entry_kmh - e.min_kmh).max(0.0)));
+                ui.label(if e.brake_ticks > 0 { e.brake_ticks.to_string() } else { "-".into() });
+                ui.label(if e.kind == EventKind::Brake { "-".into() } else { e.pattern() });
+                ui.end_row();
+            }
+        });
+        ui.label(RichText::new("Speeds in km/h.").small().weak());
+        seek
     }
 }
 
