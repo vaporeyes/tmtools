@@ -1,0 +1,11 @@
+# ABOUTME: tmreplay crate: TMF replays and maps parsed into plain data (ghosts, samples, inputs, blocks) plus the
+# ABOUTME: analysis every module shares (tick-exact input tracks, gaps between runs, block grid geometry). No UI.
+[package]
+name = "tmreplay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gbx = { path = "../gbx" }
+flate2.workspace = true

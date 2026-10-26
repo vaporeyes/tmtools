@@ -1,0 +1,16 @@
+# ABOUTME: tmassets crate: reads a gbx-tools-3d asset export (meshes, WebP textures, block, material, decoration,
+# ABOUTME: and vehicle data) from a local folder, with the same hashed asset names the web viewer uses. No UI or GPU.
+[package]
+name = "tmassets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+flate2.workspace = true
+glam.workspace = true
+thiserror.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+image-webp = "0.2"

@@ -1,0 +1,13 @@
+# ABOUTME: gbxinspect module: browses any loaded Gbx file (or a replay's embedded map): header fields, header chunks,
+# ABOUTME: external references, the body's chunk tree as the readers walked it, and a hex view of any chunk.
+[package]
+name = "gbxinspect"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tmtools-core = { path = "../tmtools-core" }
+tmreplay = { path = "../tmreplay" }
+gbx = { path = "../gbx" }
+egui.workspace = true

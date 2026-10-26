@@ -1,0 +1,12 @@
+# ABOUTME: tmtools-core: the Module trait every analysis module implements, and the Session they share
+# ABOUTME: (loaded files, runs with colors and visibility, the focused run, one playback clock, and game assets).
+[package]
+name = "tmtools-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tmreplay = { path = "../tmreplay" }
+tmassets = { path = "../tmassets" }
+egui.workspace = true

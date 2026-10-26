@@ -1,0 +1,10 @@
+# ABOUTME: gbx crate: reads binary Gbx files (header, reference table, LZO body, chunk loops, node references).
+# ABOUTME: No UI dependency; tmreplay builds replay parsing on top of it and gbxinspect walks its chunk traces.
+[package]
+name = "gbx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true

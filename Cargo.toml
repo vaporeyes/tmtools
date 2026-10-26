@@ -1,0 +1,41 @@
+# ABOUTME: Cargo workspace root for tmtools, a modular Rust + egui toolset for analyzing TrackMania Forever replays.
+# ABOUTME: Shared crates parse Gbx files and replays; each analysis module is its own crate hosted by tmtools-app.
+[workspace]
+resolver = "2"
+members = [
+    "crates/gbx",
+    "crates/tmreplay",
+    "crates/tmassets",
+    "crates/tmtools-core",
+    "crates/inputscope",
+    "crates/telemetry",
+    "crates/trajmap",
+    "crates/gbxinspect",
+    "crates/replayview",
+    "crates/tmtools-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+egui = "0.36"
+eframe = { version = "0.36", default-features = false, features = [
+    "wgpu",
+    "default_fonts",
+] }
+egui_plot = "0.37"
+glam = "0.33"
+flate2 = "1"
+thiserror = "2"
+rfd = "0.15"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+# Parsing is the hot path when loading long replays; keep it fast in debug builds too
+[profile.dev.package."*"]
+opt-level = 2

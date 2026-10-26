@@ -1,0 +1,12 @@
+# ABOUTME: trajmap module: a top-down map of the block grid with each run's racing line, colored by speed for the
+# ABOUTME: focused run, and markers where the brake was pressed and released, the gas lifted, and checkpoints taken.
+[package]
+name = "trajmap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tmtools-core = { path = "../tmtools-core" }
+tmreplay = { path = "../tmreplay" }
+egui.workspace = true

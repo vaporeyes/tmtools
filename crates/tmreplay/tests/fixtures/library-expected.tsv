@@ -1,0 +1,6 @@
+# file	ghost	race_ms	checkpoints	samples	inputs	first_input	last_input	sample_x_y_z_at_10	speed_at_10	blocks	map_name
+3279b1562115afbf.Replay.Gbx	0	12850	12850	133	29	0:FakeIsRaceRunning=true	12850:FakeFinishLine=true	655.998,241.879,18.854	57.51	1255	"$FFF$i ShortLOL $F10#$FFF8"
+3e1f6b8ab0832c8e.Replay.Gbx	0	13170	13170	138	32	0:FakeIsRaceRunning=true	13170:FakeFinishLine=true	656.001,241.879,18.854	57.57	1255	"$FFF$i ShortLOL $F10#$FFF8"
+7c3f1a8b5f715d0b.Replay.Gbx	0	23670	10220,16210,23670	267	619	0:FakeIsRaceRunning=true	23670:FakeFinishLine=true	809.662,65.723,559.540	79.91	392	"$w$i$02fMr P's $fffPlayground $02f#10"
+c063a904bc7e7f49.Replay.Gbx	0	75350	9800,75350	784	135	0:FakeIsRaceRunning=true	75350:FakeFinishLine=true	881.233,207.997,336.000	32.33	1820	"$90CS$82Ch$73Bo$65Br$56Bt$58Bi$49Ae$3BA $2CAfor $2CBDragon"
+d99c3845b7a61a78.Replay.Gbx	0	21960	6220,9930,15560,19240,21960	250	591	0:FakeIsRaceRunning=true	21960:FakeFinishLine=true	1693.779,50.018,695.173	56.54	319	"$o$n$s$fffInterlock #USM"

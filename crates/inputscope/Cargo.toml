@@ -1,0 +1,12 @@
+# ABOUTME: inputscope module: a tick-exact TAS-style piano roll of a run's inputs, hold statistics, and a hold table
+# ABOUTME: that matches each press against another run's press at the same place on the track.
+[package]
+name = "inputscope"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tmtools-core = { path = "../tmtools-core" }
+tmreplay = { path = "../tmreplay" }
+egui.workspace = true
