@@ -41,6 +41,9 @@ pub struct ReplayViewModule {
     show_lines: bool,
     /// Posts at the focused run's checkpoints in the textured view
     show_posts: bool,
+    /// Draw other runs' cars as gray see-through ghosts, and how opaque
+    ghosts: bool,
+    ghost_opacity: f32,
     /// Draw with the game assets when an export is set
     textured: bool,
     load: Option<SceneLoad>,
@@ -68,6 +71,8 @@ impl Default for ReplayViewModule {
             show_blocks: true,
             show_lines: true,
             show_posts: true,
+            ghosts: true,
+            ghost_opacity: 0.5,
             textured: true,
             load: None,
             ready: None,
@@ -123,6 +128,10 @@ impl Module for ReplayViewModule {
             ui.checkbox(&mut self.show_lines, "Racing lines");
             if session.assets.is_some() && wgpu.is_some() && self.textured {
                 ui.checkbox(&mut self.show_posts, "Checkpoint posts");
+                ui.checkbox(&mut self.ghosts, "Ghost other cars").on_hover_text("Draw the cars of runs you aren't following gray and see-through");
+                if self.ghosts {
+                    ui.add(egui::Slider::new(&mut self.ghost_opacity, 0.1..=1.0).show_value(false)).on_hover_text("How opaque ghost cars are");
+                }
             }
             ui.label(egui::RichText::new("Orbit and overview: drag to turn, wheel to zoom").weak().small());
         });
@@ -247,7 +256,7 @@ impl ReplayViewModule {
                 let pose = Mat4::from_rotation_translation(q, p);
                 let wheels = tmscene::vehicle::wheel_state(samples, now);
                 let parts = model.part_matrices(wheels.as_ref()).into_iter().map(|m| pose * m).collect();
-                Some(CarDraw { vehicle, parts })
+                Some(CarDraw { vehicle, parts, ghost: self.ghosts && r != focus })
             })
             .collect();
         let ppp = ui.ctx().pixels_per_point();
@@ -261,7 +270,7 @@ impl ReplayViewModule {
         }
         let aspect = rect.width() / rect.height().max(1.0);
         let pixels = rect.size() * ppp;
-        let uniform = FrameUniform::new(camera.view_proj(aspect), camera.eye, &ready.mood, [pixels.x.round(), pixels.y.round()]);
+        let uniform = FrameUniform::new(camera.view_proj(aspect), camera.eye, &ready.mood, [pixels.x.round(), pixels.y.round()], [1.0, self.ghost_opacity]);
 
         let texture = {
             let mut egui_renderer = rs.renderer.write();

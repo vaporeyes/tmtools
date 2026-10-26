@@ -186,7 +186,9 @@ shows until it is ready. **Game textures** switches back to the wireframe.
 
 Racing lines are drawn a few pixels wide at any distance (bolder for the
 focused run), and yellow posts mark where the focused run took each
-checkpoint; both can be switched off.
+checkpoint; both can be switched off. The cars of runs you aren't following
+are drawn as gray see-through ghosts, as the web viewer does (**Ghost other
+cars**, with a slider for how opaque).
 
 **Chase** uses each vehicle's own chase camera settings from the export;
 **Orbit car** and **Overview** turn with a drag and zoom with the wheel. The

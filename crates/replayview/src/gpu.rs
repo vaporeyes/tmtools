@@ -48,8 +48,9 @@ pub struct FrameUniform {
 }
 
 impl FrameUniform {
-    /// viewport is the image size in pixels, for lines of constant screen width
-    pub fn new(view_proj: Mat4, camera: glam::Vec3, mood: &Mood, viewport: [f32; 2]) -> Self {
+    /// viewport is the image size in pixels, for lines of constant screen width; ghost is how gray (0 to 1) and how
+    /// opaque other runs' cars are drawn
+    pub fn new(view_proj: Mat4, camera: glam::Vec3, mood: &Mood, viewport: [f32; 2], ghost: [f32; 2]) -> Self {
         let rgb = |c: [f32; 3], k: f32| [c[0] * k, c[1] * k, c[2] * k, 1.0];
         let sun = mood.sun_direction();
         Self {
@@ -64,7 +65,7 @@ impl FrameUniform {
             fog_color: rgb(linear(mood.sky[4]), 1.0),
             fog: [FOG_NEAR, FOG_FAR, 0.0, 0.0],
             sky: mood.sky.map(|c| rgb(linear(c), 1.0)),
-            viewport: [viewport[0], viewport[1], 0.0, 0.0],
+            viewport: [viewport[0], viewport[1], ghost[0], ghost[1]],
         }
     }
 }
@@ -108,6 +109,8 @@ enum Pass {
     Opaque,
     Blend,
     Add,
+    /// Other runs' cars: see-through and gray, drawn after everything else they could show through to
+    Ghost,
 }
 
 struct GpuPart {
@@ -116,6 +119,9 @@ struct GpuPart {
     index_count: u32,
     instances: wgpu::Buffer,
     instance_count: u32,
+    /// For vehicles: the instances drawn as ghosts (other runs' cars)
+    ghost_instances: Option<wgpu::Buffer>,
+    ghost_count: u32,
     /// For vehicles: which of the vehicle's parts this is, to pick its matrix from each car's posed parts
     source: usize,
     material: Arc<wgpu::BindGroup>,
@@ -127,6 +133,8 @@ struct GpuPart {
 pub struct CarDraw {
     pub vehicle: String,
     pub parts: Vec<Mat4>,
+    /// Drawn see-through and gray, for runs that aren't followed
+    pub ghost: bool,
 }
 
 /// What the module wants drawn this frame
@@ -234,7 +242,7 @@ impl Renderer {
         let frame_only = layout(&[Some(&frame_layout)]);
 
         let mut pipelines = HashMap::new();
-        for pass in [Pass::Opaque, Pass::Blend, Pass::Add] {
+        for pass in [Pass::Opaque, Pass::Blend, Pass::Add, Pass::Ghost] {
             for double_sided in [false, true] {
                 pipelines.insert((pass, double_sided), part_pipeline(device, &shader, &part_layout, pass, double_sided));
             }
@@ -453,8 +461,7 @@ impl Renderer {
         let init = |label, contents: &[u8], usage| device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage });
         let (instances, instance_count, source) = if let Some(source) = vehicle_part {
             // Rewritten every frame with each car's posed part; sized for a few cars and grown on demand
-            let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("car instances"), size: 64 * 8, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-            (buffer, 0, source)
+            (instance_buffer(device, 64 * 8), 0, source)
         } else {
             let data: Vec<[[f32; 4]; 4]> = part.instances.iter().map(|m| m.to_cols_array_2d()).collect();
             (init("instances", bytemuck::cast_slice(&data), wgpu::BufferUsages::VERTEX), part.instances.len() as u32, 0)
@@ -465,6 +472,8 @@ impl Renderer {
             index_count: g.indices.len() as u32,
             instances,
             instance_count,
+            ghost_instances: None,
+            ghost_count: 0,
             source,
             material,
             pass,
@@ -485,15 +494,13 @@ impl Renderer {
         for (name, parts) in &mut self.vehicles {
             let cars = by_vehicle.get(name.as_str()).map_or(&[][..], Vec::as_slice);
             for part in parts.iter_mut() {
-                let data: Vec<[[f32; 4]; 4]> = cars.iter().filter_map(|car| car.parts.get(part.source)).map(|m| m.to_cols_array_2d()).collect();
-                let bytes: &[u8] = bytemuck::cast_slice(&data);
-                if bytes.len() as u64 > part.instances.size() {
-                    part.instances = device.create_buffer(&wgpu::BufferDescriptor { label: Some("car instances"), size: bytes.len() as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-                }
-                if !bytes.is_empty() {
-                    queue.write_buffer(&part.instances, 0, bytes);
-                }
-                part.instance_count = data.len() as u32;
+                let matrices = |ghost: bool| -> Vec<[[f32; 4]; 4]> {
+                    cars.iter().filter(|c| c.ghost == ghost).filter_map(|car| car.parts.get(part.source)).map(|m| m.to_cols_array_2d()).collect()
+                };
+                let (full, ghosts) = (matrices(false), matrices(true));
+                part.instance_count = write_instances(device, queue, &mut part.instances, &full);
+                let buffer = part.ghost_instances.get_or_insert_with(|| instance_buffer(device, 64 * 8));
+                part.ghost_count = write_instances(device, queue, buffer, &ghosts);
             }
         }
 
@@ -538,6 +545,16 @@ impl Renderer {
                 pass.draw_indexed(0..part.index_count, 0, 0..part.instance_count);
             }
         }
+        // Ghost cars after everything they could show through to, without hiding what's behind them
+        for part in self.vehicles.values().flatten().filter(|p| p.ghost_count > 0 && p.pass != Pass::Add) {
+            let Some(instances) = &part.ghost_instances else { continue };
+            pass.set_pipeline(&self.pipelines[&(Pass::Ghost, part.double_sided)]);
+            pass.set_bind_group(1, part.material.as_ref(), &[]);
+            pass.set_vertex_buffer(0, part.vertices.slice(..));
+            pass.set_vertex_buffer(1, instances.slice(..));
+            pass.set_index_buffer(part.indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..part.index_count, 0, 0..part.ghost_count);
+        }
         // Ribbons and posts last: road surfaces are blended and drawn after opaque parts, so anything earlier would be
         // painted over. They still test depth, so walls and blocks in front hide them.
         if let Some((buffer, count)) = &self.overlay_buffer {
@@ -562,7 +579,7 @@ fn part_pipeline(device: &wgpu::Device, shader: &wgpu::ShaderModule, layout: &wg
     ];
     let blend = match pass {
         Pass::Opaque => None,
-        Pass::Blend => Some(wgpu::BlendState::ALPHA_BLENDING),
+        Pass::Blend | Pass::Ghost => Some(wgpu::BlendState::ALPHA_BLENDING),
         Pass::Add => Some(wgpu::BlendState {
             color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
             alpha: wgpu::BlendComponent::OVER,
@@ -580,8 +597,8 @@ fn part_pipeline(device: &wgpu::Device, shader: &wgpu::ShaderModule, layout: &wg
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
-            // Additive glows don't hide what's behind them
-            depth_write_enabled: Some(pass != Pass::Add),
+            // Additive glows and ghost cars don't hide what's behind them
+            depth_write_enabled: Some(!matches!(pass, Pass::Add | Pass::Ghost)),
             depth_compare: Some(wgpu::CompareFunction::LessEqual),
             stencil: Default::default(),
             bias: Default::default(),
@@ -590,7 +607,7 @@ fn part_pipeline(device: &wgpu::Device, shader: &wgpu::ShaderModule, layout: &wg
         multisample: wgpu::MultisampleState { count: SAMPLES, mask: !0, alpha_to_coverage_enabled: pass == Pass::Blend },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("fs_main"),
+            entry_point: Some(if pass == Pass::Ghost { "fs_ghost" } else { "fs_main" }),
             compilation_options: Default::default(),
             // Opaque parts keep the cleared alpha of 1: texture alpha often holds masks, and egui would blend by it
             targets: &[Some(wgpu::ColorTargetState {
@@ -638,6 +655,22 @@ fn simple_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+fn instance_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor { label: Some("car instances"), size, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+}
+
+/// Writes instance matrices, growing the buffer when they don't fit; returns how many there are
+fn write_instances(device: &wgpu::Device, queue: &wgpu::Queue, buffer: &mut wgpu::Buffer, matrices: &[[[f32; 4]; 4]]) -> u32 {
+    let bytes: &[u8] = bytemuck::cast_slice(matrices);
+    if bytes.len() as u64 > buffer.size() {
+        *buffer = instance_buffer(device, bytes.len() as u64);
+    }
+    if !bytes.is_empty() {
+        queue.write_buffer(buffer, 0, bytes);
+    }
+    matrices.len() as u32
 }
 
 /// The image upside down: rows in reverse order

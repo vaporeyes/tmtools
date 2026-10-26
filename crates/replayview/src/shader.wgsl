@@ -14,7 +14,7 @@ struct Frame {
     fog: vec4<f32>,
     // Zenith to horizon
     sky: array<vec4<f32>, 5>,
-    // x, y: viewport size in pixels, for lines of constant screen width
+    // x, y: viewport size in pixels, for lines of constant screen width; z, w: ghost cars' grayness and opacity
     viewport: vec4<f32>,
 }
 
@@ -91,6 +91,18 @@ fn vs_main(v: VertexIn) -> VertexOut {
 
 @fragment
 fn fs_main(in: VertexOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    return shade(in, front);
+}
+
+// Cars of the runs that aren't followed: faded toward gray and made see-through, as the web viewer draws them
+@fragment
+fn fs_ghost(in: VertexOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let c = shade(in, front);
+    let gray = vec3<f32>(dot(c.rgb, vec3<f32>(0.299, 0.587, 0.114)));
+    return vec4<f32>(mix(c.rgb, gray, frame.viewport.z), c.a * frame.viewport.w);
+}
+
+fn shade(in: VertexOut, front: bool) -> vec4<f32> {
     var albedo = material.color;
     if has(HAS_DIFFUSE) {
         albedo = albedo * textureSample(diffuse_tex, tex_sampler, in.uv);
