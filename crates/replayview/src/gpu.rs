@@ -1,5 +1,5 @@
 // ABOUTME: The textured renderer: uploads map and vehicle parts with their materials and mipmapped textures, then draws
-// ABOUTME: sky, opaque, blended, and additive passes with racing lines into an offscreen 4x MSAA target egui displays.
+// ABOUTME: sky, opaque, blended, and additive passes, then racing-line ribbons and checkpoint posts, into an offscreen 4x MSAA target.
 
 use crate::loader::LoadedScene;
 use eframe::egui;
@@ -44,10 +44,12 @@ pub struct FrameUniform {
     fog_color: [f32; 4],
     fog: [f32; 4],
     sky: [[f32; 4]; 5],
+    viewport: [f32; 4],
 }
 
 impl FrameUniform {
-    pub fn new(view_proj: Mat4, camera: glam::Vec3, mood: &Mood) -> Self {
+    /// viewport is the image size in pixels, for lines of constant screen width
+    pub fn new(view_proj: Mat4, camera: glam::Vec3, mood: &Mood, viewport: [f32; 2]) -> Self {
         let rgb = |c: [f32; 3], k: f32| [c[0] * k, c[1] * k, c[2] * k, 1.0];
         let sun = mood.sun_direction();
         Self {
@@ -62,6 +64,7 @@ impl FrameUniform {
             fog_color: rgb(linear(mood.sky[4]), 1.0),
             fog: [FOG_NEAR, FOG_FAR, 0.0, 0.0],
             sky: mood.sky.map(|c| rgb(linear(c), 1.0)),
+            viewport: [viewport[0], viewport[1], 0.0, 0.0],
         }
     }
 }
@@ -83,9 +86,19 @@ struct Vertex {
     uv: [f32; 2],
 }
 
+/// One corner of a racing-line quad: its end of the segment, the other end, which side, and the width in pixels
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LineVertex {
+    pub position: [f32; 3],
+    pub other: [f32; 3],
+    pub params: [f32; 2],
+    pub color: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ColorVertex {
     pub position: [f32; 3],
     pub color: [f32; 4],
 }
@@ -120,6 +133,9 @@ pub struct CarDraw {
 pub struct FrameRequest {
     pub uniform: FrameUniform,
     pub cars: Vec<CarDraw>,
+    /// Checkpoint posts, as colored triangles
+    pub overlay: Vec<ColorVertex>,
+    /// Racing lines, as quads widened in screen space
     pub lines: Vec<LineVertex>,
 }
 
@@ -138,6 +154,7 @@ pub struct Renderer {
     sampler: wgpu::Sampler,
     pipelines: HashMap<(Pass, bool), wgpu::RenderPipeline>,
     sky: wgpu::RenderPipeline,
+    overlay: wgpu::RenderPipeline,
     line: wgpu::RenderPipeline,
     white: wgpu::TextureView,
     textures: HashMap<(String, bool), Arc<wgpu::TextureView>>,
@@ -148,7 +165,8 @@ pub struct Renderer {
     map: Vec<GpuPart>,
     vehicles: HashMap<String, Vec<GpuPart>>,
     request: Option<FrameRequest>,
-    lines: Option<(wgpu::Buffer, u32)>,
+    overlay_buffer: Option<(wgpu::Buffer, u32)>,
+    line_buffer: Option<(wgpu::Buffer, u32)>,
 }
 
 impl Renderer {
@@ -222,9 +240,12 @@ impl Renderer {
             }
         }
         let sky = simple_pipeline(device, &shader, &frame_only, "vs_sky", "fs_sky", &[], wgpu::PrimitiveTopology::TriangleList, None, false);
-        let line_attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
+        let overlay_attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
+        let overlay_buffer = wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<ColorVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &overlay_attributes };
+        let overlay = simple_pipeline(device, &shader, &frame_only, "vs_line", "fs_line", &[Some(overlay_buffer)], wgpu::PrimitiveTopology::TriangleList, Some(wgpu::BlendState::ALPHA_BLENDING), true);
+        let line_attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4];
         let line_buffer = wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<LineVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &line_attributes };
-        let line = simple_pipeline(device, &shader, &frame_only, "vs_line", "fs_line", &[Some(line_buffer)], wgpu::PrimitiveTopology::LineList, Some(wgpu::BlendState::ALPHA_BLENDING), true);
+        let line = simple_pipeline(device, &shader, &frame_only, "vs_screen_line", "fs_line", &[Some(line_buffer)], wgpu::PrimitiveTopology::TriangleList, Some(wgpu::BlendState::ALPHA_BLENDING), true);
 
         let white = upload_texture(device, queue, &Texture { width: 1, height: 1, rgba: vec![255; 4] }, true);
         Self {
@@ -234,6 +255,7 @@ impl Renderer {
             sampler,
             pipelines,
             sky,
+            overlay,
             line,
             white,
             textures: HashMap::new(),
@@ -243,7 +265,8 @@ impl Renderer {
             map: Vec::new(),
             vehicles: HashMap::new(),
             request: None,
-            lines: None,
+            overlay_buffer: None,
+            line_buffer: None,
         }
     }
 
@@ -474,9 +497,13 @@ impl Renderer {
             }
         }
 
-        self.lines = (!request.lines.is_empty()).then(|| {
+        self.line_buffer = (!request.lines.is_empty()).then(|| {
             let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("lines"), contents: bytemuck::cast_slice(&request.lines), usage: wgpu::BufferUsages::VERTEX });
             (buffer, request.lines.len() as u32)
+        });
+        self.overlay_buffer = (!request.overlay.is_empty()).then(|| {
+            let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("overlay"), contents: bytemuck::cast_slice(&request.overlay), usage: wgpu::BufferUsages::VERTEX });
+            (buffer, request.overlay.len() as u32)
         });
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -511,9 +538,14 @@ impl Renderer {
                 pass.draw_indexed(0..part.index_count, 0, 0..part.instance_count);
             }
         }
-        // Lines last: road surfaces are blended and drawn after opaque parts, so earlier lines would be painted over.
-        // They still test depth, so walls and blocks in front hide them.
-        if let Some((buffer, count)) = &self.lines {
+        // Ribbons and posts last: road surfaces are blended and drawn after opaque parts, so anything earlier would be
+        // painted over. They still test depth, so walls and blocks in front hide them.
+        if let Some((buffer, count)) = &self.overlay_buffer {
+            pass.set_pipeline(&self.overlay);
+            pass.set_vertex_buffer(0, buffer.slice(..));
+            pass.draw(0..*count, 0..1);
+        }
+        if let Some((buffer, count)) = &self.line_buffer {
             pass.set_pipeline(&self.line);
             pass.set_vertex_buffer(0, buffer.slice(..));
             pass.draw(0..*count, 0..1);
@@ -705,7 +737,7 @@ mod tests {
 
     #[test]
     fn uniforms_match_the_shader_layout() {
-        assert_eq!(std::mem::size_of::<FrameUniform>(), 320);
+        assert_eq!(std::mem::size_of::<FrameUniform>(), 336);
         assert_eq!(std::mem::size_of::<MaterialUniform>(), 32);
         assert_eq!(std::mem::size_of::<Vertex>(), 32);
     }

@@ -5,6 +5,7 @@ mod camera;
 mod gpu;
 mod loader;
 mod module;
+mod overlay;
 
 pub use camera::{Camera, Projector};
 pub use module::ReplayViewModule;

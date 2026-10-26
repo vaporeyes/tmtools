@@ -1,4 +1,4 @@
-// ABOUTME: Shaders for the textured 3D view: lit and fogged map and car parts, the mood's sky gradient, and racing lines.
+// ABOUTME: Shaders for the textured 3D view: lit and fogged map and car parts, the mood's sky gradient, and colored overlays.
 // ABOUTME: Lighting follows three.js as the web viewer uses it: Lambert diffuse, plus Blinn-Phong highlights for Phong materials.
 
 struct Frame {
@@ -14,6 +14,8 @@ struct Frame {
     fog: vec4<f32>,
     // Zenith to horizon
     sky: array<vec4<f32>, 5>,
+    // x, y: viewport size in pixels, for lines of constant screen width
+    viewport: vec4<f32>,
 }
 
 struct Material {
@@ -177,7 +179,7 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     return vec4<f32>(color, 1.0);
 }
 
-// Racing lines
+// Colored overlays: racing-line ribbons and checkpoint posts
 
 struct LineIn {
     @location(0) position: vec3<f32>,
@@ -200,4 +202,46 @@ fn vs_line(v: LineIn) -> LineOut {
 @fragment
 fn fs_line(in: LineOut) -> @location(0) vec4<f32> {
     return in.color;
+}
+
+// Racing lines: each segment is a quad widened in screen space, so lines keep their pixel width at any distance
+
+struct ScreenLineIn {
+    @location(0) position: vec3<f32>,
+    @location(1) other: vec3<f32>,
+    // x: which side of the line (-1 or 1), y: width in pixels
+    @location(2) params: vec2<f32>,
+    @location(3) color: vec4<f32>,
+}
+
+@vertex
+fn vs_screen_line(v: ScreenLineIn) -> LineOut {
+    var a = frame.view_proj * vec4<f32>(v.position, 1.0);
+    var b = frame.view_proj * vec4<f32>(v.other, 1.0);
+    // Cut the segment at the near plane so endpoints behind the camera don't flip
+    let near = 0.05;
+    if a.w < near && b.w >= near {
+        a = mix(a, b, (near - a.w) / (b.w - a.w));
+    } else if b.w < near && a.w >= near {
+        b = mix(b, a, (near - b.w) / (a.w - b.w));
+    }
+    var out: LineOut;
+    out.color = v.color;
+    if a.w < near {
+        // Entirely behind the camera
+        out.clip = vec4<f32>(0.0, 0.0, -1.0, 1.0);
+        return out;
+    }
+    let half = frame.viewport.xy * 0.5;
+    let sa = a.xy / a.w * half;
+    let sb = b.xy / b.w * half;
+    var dir = sb - sa;
+    if length(dir) < 1e-4 {
+        dir = vec2<f32>(1.0, 0.0);
+    }
+    dir = normalize(dir);
+    let normal = vec2<f32>(-dir.y, dir.x);
+    let offset = normal * v.params.x * v.params.y * 0.5 / half * a.w;
+    out.clip = vec4<f32>(a.xy + offset, a.z, a.w);
+    return out;
 }

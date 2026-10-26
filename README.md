@@ -184,6 +184,10 @@ ambient light, and fog). It renders with wgpu into a
 4x multisampled image; the map loads on a background thread and the wireframe
 shows until it is ready. **Game textures** switches back to the wireframe.
 
+Racing lines are drawn a few pixels wide at any distance (bolder for the
+focused run), and yellow posts mark where the focused run took each
+checkpoint; both can be switched off.
+
 **Chase** uses each vehicle's own chase camera settings from the export;
 **Orbit car** and **Overview** turn with a drag and zoom with the wheel. The
 HUD shows time, speed, and the arrow keys lit to the share held.

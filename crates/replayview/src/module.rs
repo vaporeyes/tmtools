@@ -2,7 +2,7 @@
 // ABOUTME: an export is set (wireframe cells and boxes otherwise), with a corner HUD of the focused run's speed and inputs.
 
 use crate::camera::{Camera, Projector};
-use crate::gpu::{CarDraw, DrawCallback, FrameRequest, FrameUniform, LineVertex, Renderer};
+use crate::gpu::{CarDraw, ColorVertex, DrawCallback, FrameRequest, FrameUniform, LineVertex, Renderer};
 use crate::loader::{scene_key, SceneLoad};
 use eframe::egui_wgpu;
 use std::collections::HashMap;
@@ -39,6 +39,8 @@ pub struct ReplayViewModule {
     distance: f32,
     show_blocks: bool,
     show_lines: bool,
+    /// Posts at the focused run's checkpoints in the textured view
+    show_posts: bool,
     /// Draw with the game assets when an export is set
     textured: bool,
     load: Option<SceneLoad>,
@@ -65,6 +67,7 @@ impl Default for ReplayViewModule {
             distance: 40.0,
             show_blocks: true,
             show_lines: true,
+            show_posts: true,
             textured: true,
             load: None,
             ready: None,
@@ -118,6 +121,9 @@ impl Module for ReplayViewModule {
             }
             ui.checkbox(&mut self.show_blocks, "Blocks");
             ui.checkbox(&mut self.show_lines, "Racing lines");
+            if session.assets.is_some() && wgpu.is_some() && self.textured {
+                ui.checkbox(&mut self.show_posts, "Checkpoint posts");
+            }
             ui.label(egui::RichText::new("Orbit and overview: drag to turn, wheel to zoom").weak().small());
         });
 
@@ -244,16 +250,24 @@ impl ReplayViewModule {
                 Some(CarDraw { vehicle, parts })
             })
             .collect();
-        let lines = if self.show_lines { racing_lines(session, &runs, focus) } else { Vec::new() };
+        let ppp = ui.ctx().pixels_per_point();
+        let mut overlay = Vec::new();
+        let mut lines = Vec::new();
+        if self.show_lines {
+            racing_lines(session, &runs, focus, ppp, &mut lines);
+        }
+        if self.show_posts {
+            checkpoint_posts(session, focus, &mut overlay);
+        }
         let aspect = rect.width() / rect.height().max(1.0);
-        let uniform = FrameUniform::new(camera.view_proj(aspect), camera.eye, &ready.mood);
+        let pixels = rect.size() * ppp;
+        let uniform = FrameUniform::new(camera.view_proj(aspect), camera.eye, &ready.mood, [pixels.x.round(), pixels.y.round()]);
 
-        let pixels = rect.size() * ui.ctx().pixels_per_point();
         let texture = {
             let mut egui_renderer = rs.renderer.write();
             let mut renderer = egui_renderer.callback_resources.remove::<Renderer>().unwrap_or_else(|| Renderer::new(&rs.device, &rs.queue));
             let id = renderer.ensure_targets(&rs.device, &mut egui_renderer, [pixels.x.round() as u32, pixels.y.round() as u32]);
-            renderer.set_request(FrameRequest { uniform, cars, lines });
+            renderer.set_request(FrameRequest { uniform, cars, overlay, lines });
             egui_renderer.callback_resources.insert(renderer);
             id
         };
@@ -267,20 +281,25 @@ impl ReplayViewModule {
     }
 }
 
-/// Each visible run's path as line segments, lifted off the road; the focused run's is stronger
-fn racing_lines(session: &Session, runs: &[usize], focus: usize) -> Vec<LineVertex> {
-    let mut out = Vec::new();
+/// Each visible run's path as a line a few pixels wide, lifted off the road; the focused run's is bolder
+fn racing_lines(session: &Session, runs: &[usize], focus: usize, pixels_per_point: f32, out: &mut Vec<LineVertex>) {
     for &run in runs {
         let c = session.runs[run].color;
-        let alpha = if run == focus { 0.9 } else { 0.5 };
+        let (alpha, width) = if run == focus { (0.9, 3.5) } else { (0.6, 2.0) };
         let color = [c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0, alpha];
-        let points: Vec<[f32; 3]> = session.ghost(run).samples.iter().map(|s| [s.position.x, s.position.y + 0.15, s.position.z]).collect();
-        for pair in points.windows(2) {
-            out.push(LineVertex { position: pair[0], color });
-            out.push(LineVertex { position: pair[1], color });
+        let points: Vec<Vec3> = session.ghost(run).samples.iter().map(|s| Vec3::new(s.position.x, s.position.y + 0.15, s.position.z)).collect();
+        crate::overlay::screen_line(&points, width * pixels_per_point, color, out);
+    }
+}
+
+/// Yellow posts where the focused run took each checkpoint, as the web viewer marks them
+fn checkpoint_posts(session: &Session, focus: usize, out: &mut Vec<ColorVertex>) {
+    let ghost = session.ghost(focus);
+    for t in ghost.checkpoints.iter().filter_map(|c| c.time_ms) {
+        if let Some(p) = position_at(&ghost.samples, t as f32) {
+            crate::overlay::post(v3(p), [1.0, 0.65, 0.03], out);
         }
     }
-    out
 }
 
 fn run_center(samples: &[Sample]) -> Vec3 {
