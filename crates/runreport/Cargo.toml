@@ -1,5 +1,5 @@
-# ABOUTME: runreport module: tables that summarize runs for study: sector times with the theoretical best, and
-# ABOUTME: (in later steps) braking and corner reports and exports of inputs and telemetry.
+# ABOUTME: runreport module: tables that summarize runs for study (sector times with the theoretical best, braking
+# ABOUTME: zones and turns) and exports of the focused run's inputs and telemetry for other tools.
 [package]
 name = "runreport"
 version.workspace = true
@@ -10,3 +10,4 @@ license.workspace = true
 tmtools-core = { path = "../tmtools-core" }
 tmreplay = { path = "../tmreplay" }
 egui.workspace = true
+rfd.workspace = true

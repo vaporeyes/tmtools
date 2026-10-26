@@ -1,5 +1,5 @@
-// ABOUTME: RunReportModule UI: the sector table (each run's sector times, the best of each sector, the theoretical best)
-// ABOUTME: for the focused run's map, and the focused run's braking zones and turns; every row jumps the clock there.
+// ABOUTME: RunReportModule UI: the sector table for the focused run's map, the focused run's braking zones and turns
+// ABOUTME: (every row jumps the clock there), and saving its inputs, a TAS script, or its telemetry to files.
 
 use egui::{Color32, RichText};
 use tmreplay::format_race_time;
@@ -25,12 +25,21 @@ fn loss(ms: f32) -> String {
 pub struct RunReportModule {
     /// Which kinds of events the braking and turns table lists: brake, left, right
     shown: [bool; 3],
+    /// What the last export did
+    export_status: Option<String>,
 }
 
 impl Default for RunReportModule {
     fn default() -> Self {
-        Self { shown: [true; 3] }
+        Self { shown: [true; 3], export_status: None }
     }
+}
+
+#[derive(Clone, Copy)]
+enum Export {
+    InputsCsv,
+    TasScript,
+    TelemetryCsv,
 }
 
 impl Module for RunReportModule {
@@ -39,7 +48,7 @@ impl Module for RunReportModule {
     }
 
     fn description(&self) -> &str {
-        "Sector times with the theoretical best, and every braking zone and turn of the focused run"
+        "Sector times with the theoretical best, every braking zone and turn, and exports of the focused run"
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, _wgpu: Option<&RenderState>) {
@@ -50,6 +59,8 @@ impl Module for RunReportModule {
         let seek = egui::ScrollArea::vertical()
             .auto_shrink(false)
             .show(ui, |ui| {
+                self.export_section(ui, session, focus);
+                ui.add_space(16.0);
                 let sector = sector_table(ui, session, focus);
                 ui.add_space(16.0);
                 let event = self.event_table(ui, session, focus);
@@ -64,6 +75,29 @@ impl Module for RunReportModule {
 }
 
 impl RunReportModule {
+    fn export_section(&mut self, ui: &mut egui::Ui, session: &Session, focus: usize) {
+        ui.horizontal_wrapped(|ui| {
+            ui.strong("Export the focused run:");
+            let has_inputs = session.runs[focus].track.is_some();
+            let mut chosen = None;
+            if ui.add_enabled(has_inputs, egui::Button::new("Inputs CSV...")).on_hover_text("Every recorded input event with its time, tick, and value").clicked() {
+                chosen = Some(Export::InputsCsv);
+            }
+            if ui.add_enabled(has_inputs, egui::Button::new("TAS script...")).on_hover_text("The inputs as a TMInterface-style script: press ranges, steer and gas values, respawns").clicked() {
+                chosen = Some(Export::TasScript);
+            }
+            if ui.button("Telemetry CSV...").on_hover_text("One row per sample: position, speed, pedals, steering, RPM, wheel contact").clicked() {
+                chosen = Some(Export::TelemetryCsv);
+            }
+            if let Some(kind) = chosen {
+                self.export_status = Some(save(session, focus, kind));
+            }
+            if let Some(status) = &self.export_status {
+                ui.label(RichText::new(status).small().weak());
+            }
+        });
+    }
+
     /// The focused run's braking zones and turns; returns a time to seek to when a row's start is clicked
     fn event_table(&mut self, ui: &mut egui::Ui, session: &Session, focus: usize) -> Option<f32> {
         ui.heading("Braking and turns");
@@ -119,6 +153,35 @@ impl RunReportModule {
         });
         ui.label(RichText::new("Speeds in km/h.").small().weak());
         seek
+    }
+}
+
+/// Asks where to save, writes the export, and says what happened
+fn save(session: &Session, focus: usize, kind: Export) -> String {
+    let ghost = session.ghost(focus);
+    let map = session.replay(focus).map.name.as_deref().unwrap_or("map");
+    let player = ghost.nickname.as_deref().or(ghost.login.as_deref()).unwrap_or("run");
+    let stem = format!("{}-{}", tmreplay::export::file_stem(map), tmreplay::export::file_stem(player));
+    let (suffix, extension, filter) = match kind {
+        Export::InputsCsv => ("inputs", "csv", "CSV"),
+        Export::TasScript => ("inputs", "txt", "TAS script"),
+        Export::TelemetryCsv => ("telemetry", "csv", "CSV"),
+    };
+    let Some(path) = rfd::FileDialog::new().set_file_name(format!("{stem}-{suffix}.{extension}")).add_filter(filter, &[extension]).save_file() else {
+        return "Export cancelled.".into();
+    };
+    let content = match (kind, session.runs[focus].track.as_ref()) {
+        (Export::InputsCsv, _) => tmreplay::export::inputs_csv(&ghost.inputs),
+        (Export::TasScript, Some(track)) => {
+            let title = format!("{} on {}", tmreplay::strip_formatting(player), tmreplay::strip_formatting(map));
+            tmreplay::export::tas_script(&ghost.inputs, track, &title)
+        }
+        (Export::TasScript, None) => return "This run has no inputs to export.".into(),
+        (Export::TelemetryCsv, _) => tmreplay::export::telemetry_csv(&ghost.samples),
+    };
+    match std::fs::write(&path, content) {
+        Ok(()) => format!("Saved {}", path.display()),
+        Err(e) => format!("Couldn't save {}: {e}", path.display()),
     }
 }
 

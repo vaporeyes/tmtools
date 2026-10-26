@@ -15,7 +15,8 @@ any tab moves all of them:
   markers for braking, gas lifts, respawns, checkpoints, and sector splits.
 - **Run Report** - sector times for every run on a map, split at checkpoints
   and at points you place, with the best of each sector and the theoretical
-  best; and every braking zone and turn with entry, slowest, and exit speeds.
+  best; every braking zone and turn with entry, slowest, and exit speeds; and
+  exports of inputs (CSV or a TAS script) and telemetry (CSV).
 - **Replay Viewer** - the runs in 3D with the game's own meshes and textures
   (from an asset export), or a wireframe without one, with chase, orbit, and
   overview cameras and an input HUD.
@@ -158,6 +159,18 @@ point, and end, the speed lost, ticks of braking within it, and how it was
 steered (one hold, taps with the share held, or the analog peak). Click the
 start or the slowest point to jump there; filter by braking and left or
 right turns.
+
+**Export the focused run** saves, through a file dialog:
+
+- **Inputs CSV** - every recorded input event: `time_ms`, `tick`, `input`,
+  and `value` (1 or 0 for buttons, the raw amount for analog inputs).
+- **TAS script** - the inputs in TMInterface's script style: digital holds as
+  `start-end press up|down|left|right` ranges in seconds (a hold still down at
+  the finish is a lone `press`), analog steering and gas as raw `steer` and
+  `gas` values, and respawns as `press enter`.
+- **Telemetry CSV** - one row per sample: position, speed, gas, brake, and
+  steering as the car recorded them, RPM, turbo, and how many wheels slide and
+  touch the ground.
 
 ## Replay Viewer
 
