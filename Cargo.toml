@@ -13,6 +13,7 @@ members = [
     "crates/trajmap",
     "crates/gbxinspect",
     "crates/replayview",
+    "crates/runreport",
     "crates/tmtools-app",
 ]
 

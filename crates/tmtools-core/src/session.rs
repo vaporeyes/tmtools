@@ -2,11 +2,12 @@
 // ABOUTME: run, the playback clock, and the game asset export. Pure state and logic, so it is tested without a window.
 
 use egui::Color32;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tmassets::AssetStore;
 use tmreplay::track::{InputTrack, TICK_MS};
-use tmreplay::{parse_replay, Ghost, Replay};
+use tmreplay::{parse_replay, Ghost, Replay, Vec3};
 
 /// Run colors, picked in order and reused after the last
 const PALETTE: [Color32; 8] = [
@@ -72,6 +73,8 @@ pub struct Session {
     pub status: Option<String>,
     /// Meshes and textures exported from a TMF install, for drawing maps and cars as the game does
     pub assets: Option<Arc<AssetStore>>,
+    /// Sector split points placed on each map, by map_key
+    pub splits: HashMap<String, Vec<Vec3>>,
     next_color: usize,
 }
 
@@ -84,6 +87,7 @@ impl Default for Session {
             playback: Playback { time_ms: 0.0, playing: false, speed: 1.0 },
             status: None,
             assets: None,
+            splits: HashMap::new(),
             next_color: 0,
         }
     }
@@ -202,6 +206,22 @@ impl Session {
         self.seek((tick + ticks * TICK_MS) as f64);
     }
 
+    /// Identifies a run's map: its UID, else the file name; runs on the same map share sector splits
+    pub fn map_key(&self, run: usize) -> String {
+        self.replay(run).map.uid.clone().unwrap_or_else(|| self.files[self.runs[run].file].name.clone())
+    }
+
+    /// Visible runs on the same map as the given run, that run first
+    pub fn runs_on_map_of(&self, run: usize) -> Vec<usize> {
+        let key = self.map_key(run);
+        std::iter::once(run).chain(self.visible_runs().filter(|&r| r != run && self.map_key(r) == key)).collect()
+    }
+
+    /// Split points placed on the run's map
+    pub fn splits_for(&self, run: usize) -> &[Vec3] {
+        self.splits.get(&self.map_key(run)).map_or(&[], Vec::as_slice)
+    }
+
     /// The current time as the tick it falls in
     pub fn tick_ms(&self) -> i32 {
         tmreplay::track::tick_of(self.playback.time_ms)
@@ -280,6 +300,20 @@ mod tests {
             r.map.name = Some("$o$n$s$fffInterlock #USM".into());
         }
         assert_eq!(s.files[0].title(), "Interlock #USM");
+    }
+
+    #[test]
+    fn runs_on_the_same_map_share_splits() {
+        let mut s = session_with_runs(&[1000, 2000, 3000]);
+        for (i, uid) in ["a", "a", "b"].into_iter().enumerate() {
+            if let Ok(r) = &mut s.files[i].replay {
+                r.map.uid = Some(uid.into());
+            }
+        }
+        assert_eq!(s.runs_on_map_of(1), [1, 0]);
+        s.splits.entry(s.map_key(0)).or_default().push(Vec3 { x: 1.0, y: 2.0, z: 3.0 });
+        assert_eq!(s.splits_for(1).len(), 1);
+        assert!(s.splits_for(2).is_empty());
     }
 
     #[test]

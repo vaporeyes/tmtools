@@ -13,6 +13,9 @@ any tab moves all of them:
 - **Trajectory Map** - a top-down view of the block grid with racing lines
   colored by speed and markers for braking, gas lifts, respawns, and
   checkpoints.
+- **Run Report** - sector times for every run on a map, split at checkpoints
+  and at points you place, with the best of each sector and the theoretical
+  best.
 - **Replay Viewer** - the runs in 3D with the game's own meshes and textures
   (from an asset export), or a wireframe without one, with chase, orbit, and
   overview cameras and an input HUD.
@@ -33,6 +36,7 @@ tmtools/
     telemetry/      Telemetry Graphs module
     trajmap/        Trajectory Map module
     replayview/     Replay Viewer module
+    runreport/      Run Report module
     gbxinspect/     Gbx Inspector module
     tmtools-app/    eframe shell: tabs, run list, playback bar
 ```
@@ -121,8 +125,20 @@ run at the same place on the track. Click any plot to seek.
 Blocks are drawn as grid cells shaded by height; block shapes are not
 modeled. The focused run's line is colored from blue (slow) to red (fast).
 Brake presses are filled red dots, releases red rings, gas lifts orange
-triangles, and checkpoints blue diamonds with their times. Hover the line to
+triangles, checkpoints blue diamonds with their times, and placed sector splits
+white squares labeled with the sector they start. Hover the line to
 read time, speed, and inputs; click it to seek there.
+
+## Run Report
+
+The sector table covers the focused run and every visible run on the same
+map. Sectors end at each checkpoint and at each split placed with **Place
+splits** on the Trajectory Map (click the focused line to place one,
+right-click a split to remove it; splits are kept per map while the app runs).
+Each run's time at a placed split is when it passes that point, matched in
+order along the track. The best time of each sector is highlighted, others
+show what they lose to it, and the **Best** row adds up to the theoretical
+best. Clicking a time jumps to the start of that sector for that run.
 
 ## Replay Viewer
 

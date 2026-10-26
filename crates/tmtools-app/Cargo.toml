@@ -18,6 +18,7 @@ telemetry = { path = "../telemetry" }
 trajmap = { path = "../trajmap" }
 gbxinspect = { path = "../gbxinspect" }
 replayview = { path = "../replayview" }
+runreport = { path = "../runreport" }
 egui.workspace = true
 eframe = { workspace = true, features = ["persistence"] }
 rfd.workspace = true

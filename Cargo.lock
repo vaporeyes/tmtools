@@ -2548,6 +2548,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "runreport"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "tmreplay",
+ "tmtools-core",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3008,6 +3017,7 @@ dependencies = [
  "png 0.17.16",
  "replayview",
  "rfd",
+ "runreport",
  "telemetry",
  "tmreplay",
  "tmtools-core",

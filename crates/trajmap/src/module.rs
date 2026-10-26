@@ -1,5 +1,5 @@
 // ABOUTME: TrajMapModule UI: blocks as grid cells shaded by height, racing lines (the focused one colored by speed),
-// ABOUTME: input and checkpoint markers, cars at the playhead; hover reads the path, click seeks to that point.
+// ABOUTME: input, checkpoint, and sector split markers, cars at the playhead; click seeks, or places a split when placing.
 
 use crate::view::{nearest_on_path, speed_color, MapView};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Vec2};
@@ -25,6 +25,8 @@ pub struct TrajMapModule {
     show_lifts: bool,
     show_checkpoints: bool,
     markers_all_runs: bool,
+    /// Clicks on the focused line place sector splits instead of seeking
+    placing_splits: bool,
 }
 
 impl Default for TrajMapModule {
@@ -38,6 +40,7 @@ impl Default for TrajMapModule {
             show_lifts: true,
             show_checkpoints: true,
             markers_all_runs: false,
+            placing_splits: false,
         }
     }
 }
@@ -71,6 +74,9 @@ impl Module for TrajMapModule {
             ui.checkbox(&mut self.show_lifts, "Gas lifts");
             ui.checkbox(&mut self.show_checkpoints, "Checkpoints");
             ui.checkbox(&mut self.markers_all_runs, "Markers for every run");
+            ui.separator();
+            ui.checkbox(&mut self.placing_splits, "Place splits")
+                .on_hover_text("Click the focused line to split a sector there; right-click a split to remove it. The Run Report times every sector.");
         });
         legend(ui, session, focus);
 
@@ -137,8 +143,33 @@ impl Module for TrajMapModule {
             }
         }
 
-        // Hover reads the focused path; a click seeks to the point under the pointer
+        // Sector splits, labeled by the sector each one starts
+        let splits = session.splits_for(focus).to_vec();
+        let ghost = session.ghost(focus);
+        let boundaries = tmreplay::sectors::boundaries(ghost, &splits);
+        for (i, b) in boundaries.iter().enumerate() {
+            if let tmreplay::sectors::Boundary::Point(p) = b {
+                let at = to_screen([p.x, p.z]);
+                painter.rect_filled(Rect::from_center_size(at, Vec2::splat(9.0)), 1.0, Color32::WHITE);
+                painter.text(at + Vec2::new(8.0, 8.0), Align2::LEFT_TOP, format!("S{}", i + 2), FontId::proportional(12.0), Color32::WHITE);
+            }
+        }
+        if self.placing_splits && response.secondary_clicked() {
+            if let Some(pointer) = response.interact_pointer_pos() {
+                let nearest = splits.iter().enumerate().map(|(i, p)| (i, to_screen([p.x, p.z]).distance(pointer))).min_by(|a, b| a.1.total_cmp(&b.1));
+                if let Some((i, _)) = nearest.filter(|&(_, d)| d <= HOVER_PX) {
+                    let key = session.map_key(focus);
+                    if let Some(list) = session.splits.get_mut(&key) {
+                        list.remove(i);
+                    }
+                    return;
+                }
+            }
+        }
+
+        // Hover reads the focused path; a click seeks to the point under the pointer, or places a split there
         let mut seek = None;
+        let mut place = None;
         if let Some(pointer) = response.hover_pos() {
             if let Some((t, _)) = nearest_on_path(focus_samples, to_screen, pointer).filter(|&(_, d)| d <= HOVER_PX) {
                 if let Some(p) = position_at(focus_samples, t) {
@@ -152,11 +183,20 @@ impl Module for TrajMapModule {
                     let brake = if track.value_at(Channel::Brake, tick) > 0.0 { ", braking" } else { "" };
                     format!("\nsteer {:+.0}%, {gas}{brake}", steer * 100.0)
                 });
-                response.clone().on_hover_text_at_pointer(format!("{}  {:.0} km/h{inputs}\nclick to seek", format_race_time(tick as i64), speed));
+                let action = if self.placing_splits { "click to split a sector here" } else { "click to seek" };
+                response.clone().on_hover_text_at_pointer(format!("{}  {:.0} km/h{inputs}\n{action}", format_race_time(tick as i64), speed));
                 if response.clicked() {
-                    seek = Some(tick as f64);
+                    if self.placing_splits {
+                        place = position_at(focus_samples, t);
+                    } else {
+                        seek = Some(tick as f64);
+                    }
                 }
             }
+        }
+        if let Some(p) = place {
+            let key = session.map_key(focus);
+            session.splits.entry(key).or_default().push(p);
         }
         if let Some(t) = seek {
             session.playback.playing = false;

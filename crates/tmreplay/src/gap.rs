@@ -108,6 +108,16 @@ pub fn matching_press(focus: &[Sample], press_ms: i32, other: &[Sample], other_p
         .map(|(other_press_ms, offset_ms)| MatchedPress { other_at_spot_ms: at_spot, other_press_ms, offset_ms })
 }
 
+/// The point on one path segment nearest the spot, as (time, distance)
+fn segment_closest(a: &Sample, b: &Sample, spot: Vec3) -> (f32, f32) {
+    let (t0, t1) = (a.time_ms as f32, b.time_ms as f32);
+    let ab = sub(b.position, a.position);
+    let len2 = dot(ab, ab);
+    let along = if len2 > 0.0 { (dot(sub(spot, a.position), ab) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    let d = sub(lerp(a.position, b.position, along), spot);
+    (t0 + along * (t1 - t0), dot(d, d).sqrt())
+}
+
 /// The point on the path nearest the spot, as (time, distance), searching segments that start in [from, to]
 fn closest_pass(samples: &[Sample], spot: Vec3, from: f32, to: f32) -> Option<(f32, f32)> {
     let mut best: Option<(f32, f32)> = None;
@@ -116,18 +126,33 @@ fn closest_pass(samples: &[Sample], spot: Vec3, from: f32, to: f32) -> Option<(f
         if t1 < from || t0 > to {
             continue;
         }
-        let (a, b) = (pair[0].position, pair[1].position);
-        let ab = sub(b, a);
-        let len2 = dot(ab, ab);
-        let along = if len2 > 0.0 { (dot(sub(spot, a), ab) / len2).clamp(0.0, 1.0) } else { 0.0 };
-        let p = lerp(a, b, along);
-        let d = sub(p, spot);
-        let distance = dot(d, d).sqrt();
+        let (time, distance) = segment_closest(&pair[0], &pair[1], spot);
         if best.is_none_or(|(_, bd)| distance < bd) {
-            best = Some((t0 + along * (t1 - t0), distance));
+            best = Some((time, distance));
         }
     }
     best
+}
+
+/// When the run first passes the spot after after_ms: the closest approach within the first stretch of path that comes
+/// within matching distance of it. None when it never comes that close afterwards.
+pub fn pass_time_after(samples: &[Sample], spot: Vec3, after_ms: f32) -> Option<f32> {
+    let mut best: Option<(f32, f32)> = None;
+    for pair in samples.windows(2) {
+        if (pair[1].time_ms as f32) < after_ms {
+            continue;
+        }
+        let (time, distance) = segment_closest(&pair[0], &pair[1], spot);
+        if distance <= MAX_MATCH_DISTANCE && time >= after_ms {
+            if best.is_none_or(|(_, bd)| distance < bd) {
+                best = Some((time, distance));
+            }
+        } else if best.is_some() {
+            // Left the spot again; a later pass would be another lap
+            break;
+        }
+    }
+    best.map(|(t, _)| t)
 }
 
 #[cfg(test)]
@@ -171,6 +196,17 @@ mod tests {
         assert_eq!(matched.other_press_ms, 1960);
         assert!((matched.offset_ms + 40.0).abs() < 1e-2);
         assert_eq!(matching_press(&focus, 1000, &slower, [2500], 300.0), None);
+    }
+
+    #[test]
+    fn finds_the_first_pass_after_a_time() {
+        // Out along x and back: the spot at x = 5 is passed at 500 ms and again at 1500 ms
+        let mut samples = run(10.0, 1000);
+        samples.extend((1..=10).map(|i| Sample { time_ms: 1000 + i * 100, position: Vec3 { x: 10.0 - i as f32, y: 0.0, z: 0.0 }, ..Default::default() }));
+        let spot = Vec3 { x: 5.0, y: 0.0, z: 0.0 };
+        assert!((pass_time_after(&samples, spot, 0.0).unwrap() - 500.0).abs() < 1e-3);
+        assert!((pass_time_after(&samples, spot, 600.0).unwrap() - 1500.0).abs() < 1e-3);
+        assert_eq!(pass_time_after(&samples, Vec3 { x: 0.0, y: 0.0, z: 500.0 }, 0.0), None);
     }
 
     #[test]
