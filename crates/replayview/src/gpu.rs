@@ -28,6 +28,8 @@ const FLIP_Y: u32 = 16;
 const UNLIT: u32 = 32;
 const EMISSIVE: u32 = 64;
 const FIXED_OPACITY: u32 = 128;
+const PHONG: u32 = 256;
+const HAS_SPECULAR: u32 = 512;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -101,18 +103,23 @@ struct GpuPart {
     index_count: u32,
     instances: wgpu::Buffer,
     instance_count: u32,
-    /// For vehicles: the part's transform within the car, applied after each car's pose
-    local: Mat4,
+    /// For vehicles: which of the vehicle's parts this is, to pick its matrix from each car's posed parts
+    source: usize,
     material: Arc<wgpu::BindGroup>,
     pass: Pass,
     double_sided: bool,
 }
 
+/// One car to draw: its vehicle, and the world transform of each of the vehicle's parts (wheels posed)
+pub struct CarDraw {
+    pub vehicle: String,
+    pub parts: Vec<Mat4>,
+}
+
 /// What the module wants drawn this frame
 pub struct FrameRequest {
     pub uniform: FrameUniform,
-    /// Vehicle name and world pose of each car
-    pub cars: Vec<(String, Mat4)>,
+    pub cars: Vec<CarDraw>,
     pub lines: Vec<LineVertex>,
 }
 
@@ -177,6 +184,7 @@ impl Renderer {
                 texture_entry(3),
                 texture_entry(4),
                 wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                texture_entry(6),
             ],
         });
         let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -282,10 +290,10 @@ impl Renderer {
     pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &LoadedScene) {
         let night = scene.map.as_ref().is_some_and(|m| m.mood.name == MoodName::Night);
         let textures = &scene.textures;
-        self.map = scene.map.as_ref().map_or_else(Vec::new, |m| m.parts.iter().filter_map(|p| self.upload_part(device, queue, p, textures, night, false)).collect());
-        for (name, parts) in &scene.vehicles {
+        self.map = scene.map.as_ref().map_or_else(Vec::new, |m| m.parts.iter().filter_map(|p| self.upload_part(device, queue, p, textures, night, None)).collect());
+        for (name, model) in &scene.vehicles {
             if !self.vehicles.contains_key(name) {
-                let gpu = parts.iter().filter_map(|p| self.upload_part(device, queue, p, textures, night, true)).collect();
+                let gpu = model.parts.iter().enumerate().filter_map(|(i, p)| self.upload_part(device, queue, p, textures, night, Some(i))).collect();
                 self.vehicles.insert(name.clone(), gpu);
             }
         }
@@ -306,7 +314,8 @@ impl Renderer {
         Some(view)
     }
 
-    fn upload_part(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, part: &DrawPart, textures: &HashMap<String, Arc<Texture>>, night: bool, vehicle: bool) -> Option<GpuPart> {
+    /// Uploads one part; `vehicle_part` is its index in a vehicle's parts, whose instances are rewritten every frame
+    fn upload_part(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, part: &DrawPart, textures: &HashMap<String, Arc<Texture>>, night: bool, vehicle_part: Option<usize>) -> Option<GpuPart> {
         let (pass, double_sided, uniform, slots) = match &part.surface {
             Surface::Invisible => return None,
             Surface::Glass => (Pass::Blend, false, MaterialUniform { color: [1.0; 4], flags: FIXED_OPACITY, opacity: 0.35, pad: [0.0; 2] }, None),
@@ -345,6 +354,10 @@ impl Renderer {
                     if p.opacity().is_some() {
                         flags |= FIXED_OPACITY;
                     }
+                    // The web viewer draws these with three.js's Phong material
+                    if !p.basic && (p.specular_alpha || slots.specular.is_some()) {
+                        flags |= PHONG;
+                    }
                     let uniform = MaterialUniform { color: [1.0; 4], flags, opacity: p.opacity().unwrap_or(1.0), pad: [0.0; 2] };
                     (pass, p.double_sided, uniform, Some(slots.clone()))
                 }
@@ -358,10 +371,20 @@ impl Renderer {
             None => {
                 let mut uniform = uniform;
                 let mut view = |path: Option<&String>, srgb: bool| self.texture(device, queue, textures, path, srgb);
-                let (diffuse, blend2, blend_i, blend3) = match &slots {
-                    Some(s) => (view(s.diffuse.as_ref(), true), view(s.blend2.as_ref(), true), view(s.blend_intensity.as_ref(), false), view(s.blend3.as_ref(), true)),
-                    None => (None, None, None, None),
+                let (diffuse, blend2, blend_i, blend3, specular) = match &slots {
+                    Some(s) => (
+                        view(s.diffuse.as_ref(), true),
+                        view(s.blend2.as_ref(), true),
+                        view(s.blend_intensity.as_ref(), false),
+                        view(s.blend3.as_ref(), true),
+                        // Specular maps hold strengths, not colors
+                        view(s.specular.as_ref(), false),
+                    ),
+                    None => (None, None, None, None, None),
                 };
+                if specular.is_some() && uniform.flags & PHONG != 0 {
+                    uniform.flags |= HAS_SPECULAR;
+                }
                 if diffuse.is_some() {
                     uniform.flags |= HAS_DIFFUSE;
                 }
@@ -374,7 +397,7 @@ impl Renderer {
                 let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("material"), contents: bytemuck::bytes_of(&uniform), usage: wgpu::BufferUsages::UNIFORM });
                 let white = &self.white;
                 let pick = |v: &Option<Arc<wgpu::TextureView>>| v.as_ref().map_or(white, |v| v.as_ref()).clone();
-                let views = [pick(&diffuse), pick(&blend2), pick(&blend_i), pick(&blend3)];
+                let views = [pick(&diffuse), pick(&blend2), pick(&blend_i), pick(&blend3), pick(&specular)];
                 let group = Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("material"),
                     layout: &self.material_layout,
@@ -385,6 +408,7 @@ impl Renderer {
                         wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
                         wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&views[3]) },
                         wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                        wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&views[4]) },
                     ],
                 }));
                 self.materials.insert(key, group.clone());
@@ -404,13 +428,13 @@ impl Renderer {
             }
         }
         let init = |label, contents: &[u8], usage| device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage });
-        let (instances, instance_count, local) = if vehicle {
-            // Rewritten every frame with each car's pose; sized for a few cars and grown on demand
+        let (instances, instance_count, source) = if let Some(source) = vehicle_part {
+            // Rewritten every frame with each car's posed part; sized for a few cars and grown on demand
             let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("car instances"), size: 64 * 8, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-            (buffer, 0, part.instances[0])
+            (buffer, 0, source)
         } else {
             let data: Vec<[[f32; 4]; 4]> = part.instances.iter().map(|m| m.to_cols_array_2d()).collect();
-            (init("instances", bytemuck::cast_slice(&data), wgpu::BufferUsages::VERTEX), part.instances.len() as u32, Mat4::IDENTITY)
+            (init("instances", bytemuck::cast_slice(&data), wgpu::BufferUsages::VERTEX), part.instances.len() as u32, 0)
         };
         Some(GpuPart {
             vertices: init("vertices", bytemuck::cast_slice(&vertices), wgpu::BufferUsages::VERTEX),
@@ -418,7 +442,7 @@ impl Renderer {
             index_count: g.indices.len() as u32,
             instances,
             instance_count,
-            local,
+            source,
             material,
             pass,
             double_sided,
@@ -431,14 +455,14 @@ impl Renderer {
         queue.write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&request.uniform));
 
         // Each vehicle's parts get one instance per car of that vehicle
-        let mut poses: HashMap<&str, Vec<Mat4>> = HashMap::new();
-        for (name, pose) in &request.cars {
-            poses.entry(name.as_str()).or_default().push(*pose);
+        let mut by_vehicle: HashMap<&str, Vec<&CarDraw>> = HashMap::new();
+        for car in &request.cars {
+            by_vehicle.entry(car.vehicle.as_str()).or_default().push(car);
         }
         for (name, parts) in &mut self.vehicles {
-            let cars = poses.get(name.as_str()).map_or(&[][..], Vec::as_slice);
+            let cars = by_vehicle.get(name.as_str()).map_or(&[][..], Vec::as_slice);
             for part in parts.iter_mut() {
-                let data: Vec<[[f32; 4]; 4]> = cars.iter().map(|pose| (*pose * part.local).to_cols_array_2d()).collect();
+                let data: Vec<[[f32; 4]; 4]> = cars.iter().filter_map(|car| car.parts.get(part.source)).map(|m| m.to_cols_array_2d()).collect();
                 let bytes: &[u8] = bytemuck::cast_slice(&data);
                 if bytes.len() as u64 > part.instances.size() {
                     part.instances = device.create_buffer(&wgpu::BufferDescriptor { label: Some("car instances"), size: bytes.len() as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -446,7 +470,7 @@ impl Renderer {
                 if !bytes.is_empty() {
                     queue.write_buffer(&part.instances, 0, bytes);
                 }
-                part.instance_count = cars.len() as u32;
+                part.instance_count = data.len() as u32;
             }
         }
 

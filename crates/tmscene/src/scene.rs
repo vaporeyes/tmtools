@@ -3,6 +3,7 @@
 
 use crate::mood::{mood_for, Mood};
 use crate::placement::{plan_blocks, GridOptions};
+use crate::vehicle::VehicleModel;
 use glam::{Mat4, Vec3};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -179,11 +180,11 @@ pub fn build_map(store: &AssetStore, map: &ReplayMap) -> Result<Option<MapScene>
     Ok(Some(MapScene { parts, mood: mood_for(map.decoration.as_deref(), Some(collection_name)), missing: plan.missing, failed }))
 }
 
-/// A vehicle's parts in the car's own space; None when the export has no mesh for it
-pub fn vehicle_parts(store: &AssetStore, vehicle: &str) -> Result<Option<Vec<DrawPart>>, String> {
+/// A vehicle's parts in the car's own space, rigged for wheel animation; None when the export has no mesh for it
+pub fn vehicle_model(store: &AssetStore, vehicle: &str) -> Result<Option<VehicleModel>, String> {
     let materials = store.materials().map_err(|e| e.to_string())?;
     let Some(solid) = store.vehicle_mesh(vehicle).map_err(|e| e.to_string())? else { return Ok(None) };
-    Ok(Some(solid_parts(&solid, &[Mat4::IDENTITY], &materials, None, true)))
+    Ok(Some(VehicleModel::from_solid(&solid.root, &materials)))
 }
 
 #[cfg(test)]

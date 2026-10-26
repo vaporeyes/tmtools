@@ -4,3 +4,4 @@
 pub mod mood;
 pub mod placement;
 pub mod scene;
+pub mod vehicle;

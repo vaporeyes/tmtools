@@ -2,7 +2,7 @@
 // ABOUTME: an export is set (wireframe cells and boxes otherwise), with a corner HUD of the focused run's speed and inputs.
 
 use crate::camera::{Camera, Projector};
-use crate::gpu::{DrawCallback, FrameRequest, FrameUniform, LineVertex, Renderer};
+use crate::gpu::{CarDraw, DrawCallback, FrameRequest, FrameUniform, LineVertex, Renderer};
 use crate::loader::{scene_key, SceneLoad};
 use eframe::egui_wgpu;
 use std::collections::HashMap;
@@ -46,6 +46,8 @@ pub struct ReplayViewModule {
     ready: Option<ReadyScene>,
     /// Camera settings per vehicle from the export
     vehicle_info: HashMap<String, Vehicle>,
+    /// Rigged vehicle models, to pose each car's wheels every frame
+    vehicles: HashMap<String, std::sync::Arc<tmscene::vehicle::VehicleModel>>,
     status: Option<String>,
 }
 
@@ -67,6 +69,7 @@ impl Default for ReplayViewModule {
             load: None,
             ready: None,
             vehicle_info: HashMap::new(),
+            vehicles: HashMap::new(),
             status: None,
         }
     }
@@ -220,15 +223,26 @@ impl ReplayViewModule {
             let missing = loaded.map.as_ref().map_or(0, |m| m.missing.len() + m.failed.len());
             self.status = loaded.error.clone().or_else(|| (missing > 0).then(|| format!("{missing} block variants have no data in the export")));
             self.vehicle_info.extend(loaded.vehicle_info);
+            self.vehicles.extend(loaded.vehicles.iter().map(|(k, v)| (k.clone(), v.clone())));
             let mood = loaded.map.as_ref().map_or_else(|| tmscene::mood::mood_for(map.decoration.as_deref(), map.collection.as_deref()), |m| m.mood);
             self.ready = Some(ReadyScene { key: loaded.key, mood });
         }
         let Some(ready) = self.ready.as_ref().filter(|r| r.key == key) else { return false };
 
         let now = session.playback.time_ms as f32;
+        // Each car's parts in the world: its pose times each part, with the wheels posed from the samples
         let cars = runs
             .iter()
-            .filter_map(|&r| car_pose(&session.ghost(r).samples, now).map(|(p, q)| (vehicle_name(session, r), Mat4::from_rotation_translation(q, p))))
+            .filter_map(|&r| {
+                let samples = &session.ghost(r).samples;
+                let (p, q) = car_pose(samples, now)?;
+                let vehicle = vehicle_name(session, r);
+                let model = self.vehicles.get(&vehicle)?;
+                let pose = Mat4::from_rotation_translation(q, p);
+                let wheels = tmscene::vehicle::wheel_state(samples, now);
+                let parts = model.part_matrices(wheels.as_ref()).into_iter().map(|m| pose * m).collect();
+                Some(CarDraw { vehicle, parts })
+            })
             .collect();
         let lines = if self.show_lines { racing_lines(session, &runs, focus) } else { Vec::new() };
         let aspect = rect.width() / rect.height().max(1.0);

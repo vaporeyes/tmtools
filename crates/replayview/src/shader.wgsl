@@ -1,5 +1,5 @@
 // ABOUTME: Shaders for the textured 3D view: lit and fogged map and car parts, the mood's sky gradient, and racing lines.
-// ABOUTME: Lighting follows three.js's Lambert terms (hemisphere ambient plus one sun, both over pi) as the web viewer does.
+// ABOUTME: Lighting follows three.js as the web viewer uses it: Lambert diffuse, plus Blinn-Phong highlights for Phong materials.
 
 struct Frame {
     view_proj: mat4x4<f32>,
@@ -31,6 +31,11 @@ const FLIP_Y: u32 = 16u;
 const UNLIT: u32 = 32u;
 const EMISSIVE: u32 = 64u;
 const FIXED_OPACITY: u32 = 128u;
+const PHONG: u32 = 256u;
+const HAS_SPECULAR: u32 = 512u;
+// three.js MeshPhongMaterial defaults: specular color 0x111111 and shininess 30
+const SPECULAR_COLOR: f32 = 0.0056;
+const SHININESS: f32 = 30.0;
 const PI: f32 = 3.14159265;
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -40,6 +45,7 @@ const PI: f32 = 3.14159265;
 @group(1) @binding(3) var blend_i_tex: texture_2d<f32>;
 @group(1) @binding(4) var blend3_tex: texture_2d<f32>;
 @group(1) @binding(5) var tex_sampler: sampler;
+@group(1) @binding(6) var specular_tex: texture_2d<f32>;
 
 struct VertexIn {
     @location(0) position: vec3<f32>,
@@ -91,6 +97,7 @@ fn fs_main(in: VertexOut, @builtin(front_facing) front: bool) -> @location(0) ve
     let blend2 = textureSample(blend2_tex, tex_sampler, in.uv);
     let blend_i = textureSample(blend_i_tex, tex_sampler, in.uv).r;
     let blend3 = textureSample(blend3_tex, tex_sampler, in.uv);
+    let specular_map = textureSample(specular_tex, tex_sampler, in.uv).r;
     if has(BLEND_BOTH) {
         albedo = mix(albedo, blend2, blend_i);
     }
@@ -113,6 +120,21 @@ fn fs_main(in: VertexOut, @builtin(front_facing) front: bool) -> @location(0) ve
         let hemisphere = mix(frame.ground_ambient.rgb, frame.sky_ambient.rgb, 0.5 * n.y + 0.5);
         let sun = frame.sun_color.rgb * max(dot(n, frame.sun_dir.xyz), 0.0);
         color = albedo.rgb * (hemisphere + sun) / PI;
+        if has(PHONG) {
+            // BRDF_BlinnPhong: Schlick Fresnel, implicit geometry term 0.25, normalized Blinn-Phong distribution
+            let view = normalize(frame.camera_pos.xyz - in.world);
+            let half_dir = normalize(frame.sun_dir.xyz + view);
+            let dot_nh = clamp(dot(n, half_dir), 0.0, 1.0);
+            let dot_vh = clamp(dot(view, half_dir), 0.0, 1.0);
+            let fresnel = exp2((-5.55473 * dot_vh - 6.98316) * dot_vh);
+            let f = SPECULAR_COLOR * (1.0 - fresnel) + fresnel;
+            let d = (SHININESS * 0.5 + 1.0) * pow(dot_nh, SHININESS) / PI;
+            var strength = 1.0;
+            if has(HAS_SPECULAR) {
+                strength = specular_map;
+            }
+            color = color + sun * f * 0.25 * d * strength;
+        }
         if has(EMISSIVE) {
             color = color + albedo.rgb * 0.4;
         }

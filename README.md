@@ -129,8 +129,10 @@ read time, speed, and inputs; click it to seek there.
 With an asset export set, the viewer draws the map and cars as the web viewer
 in gbx-tools-3d-node does: blocks placed by the same rules (variants,
 rotations, default terrain, clips, terrain modifiers), the decoration around
-the track, the vehicle meshes, real textures with layered grass, and the map's
-mood (sky gradient, sun, ambient light, and fog). It renders with wgpu into a
+the track, the vehicle meshes with their wheels spinning, steering, and riding
+the suspension from the ghost's samples, real textures with layered grass,
+Phong highlights from specular maps, and the map's mood (sky gradient, sun,
+ambient light, and fog). It renders with wgpu into a
 4x multisampled image; the map loads on a background thread and the wireframe
 shows until it is ready. **Game textures** switches back to the wireframe.
 
@@ -185,9 +187,9 @@ loads.
 - TMUnlimiter maps hide their real blocks, so their maps show only the runs.
 - Without an asset export, block cells are one grid square each and ground
   height comes from a small table of environment and map sizes.
-- The textured view leaves out normal and specular maps, wheel animation, and
-  night lightmaps; materials the web viewer draws as see-through are drawn the
-  same way here.
+- The textured view leaves out normal maps, the faint specular term of
+  three.js's standard material, and night lightmaps; materials the web viewer
+  draws as see-through are drawn the same way here.
 
 ## License
 

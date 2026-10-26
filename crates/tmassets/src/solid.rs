@@ -229,7 +229,7 @@ fn skip_light(r: &mut Reader) -> Result<()> {
 }
 
 /// Rotation then translation, as a three.js object with both set
-fn local_matrix(node: &SolidNode) -> Mat4 {
+pub fn local_matrix(node: &SolidNode) -> Mat4 {
     let rotation = node.rotation.map_or(Mat4::IDENTITY, |m| {
         // Rows of the stored matrix are the columns of its transpose
         Mat4::from_mat3(Mat3::from_cols_array(&m).transpose())

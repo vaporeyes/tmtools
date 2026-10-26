@@ -8,13 +8,14 @@ use tmassets::material::MaterialSpec;
 use tmassets::texture::Texture;
 use tmassets::{AssetStore, Vehicle};
 use tmreplay::ReplayMap;
-use tmscene::scene::{build_map, vehicle_parts, DrawPart, MapScene, Surface};
+use tmscene::scene::{build_map, vehicle_model, MapScene, Surface};
+use tmscene::vehicle::VehicleModel;
 
 pub struct LoadedScene {
     /// Which map and vehicles this is, so it is built once per map
     pub key: String,
     pub map: Option<MapScene>,
-    pub vehicles: HashMap<String, Vec<DrawPart>>,
+    pub vehicles: HashMap<String, Arc<VehicleModel>>,
     pub vehicle_info: HashMap<String, Vehicle>,
     pub textures: HashMap<String, Arc<Texture>>,
     /// Why the map couldn't be built, when it couldn't
@@ -63,9 +64,9 @@ fn load(store: &AssetStore, map: &ReplayMap, vehicles: &[String], key: String) -
 
     let mut vehicle_meshes = HashMap::new();
     for name in vehicles {
-        match vehicle_parts(store, name) {
-            Ok(Some(parts)) => {
-                vehicle_meshes.insert(name.clone(), parts);
+        match vehicle_model(store, name) {
+            Ok(Some(model)) => {
+                vehicle_meshes.insert(name.clone(), Arc::new(model));
             }
             Ok(None) => error = error.or(Some(format!("The asset export has no mesh for {name}"))),
             Err(e) => error = error.or(Some(e)),
@@ -75,10 +76,10 @@ fn load(store: &AssetStore, map: &ReplayMap, vehicles: &[String], key: String) -
 
     // Decode every texture here, off the UI thread; uploads then only copy pixels
     let mut textures = HashMap::new();
-    let parts = map_scene.iter().flat_map(|m| m.parts.iter()).chain(vehicle_meshes.values().flatten());
+    let parts = map_scene.iter().flat_map(|m| m.parts.iter()).chain(vehicle_meshes.values().flat_map(|v| v.parts.iter()));
     for part in parts {
         if let Surface::Textured(MaterialSpec::Textured { textures: slots, .. }) = &part.surface {
-            for path in [&slots.diffuse, &slots.blend2, &slots.blend_intensity, &slots.blend3].into_iter().flatten() {
+            for path in [&slots.diffuse, &slots.specular, &slots.blend2, &slots.blend_intensity, &slots.blend3].into_iter().flatten() {
                 if !textures.contains_key(path) {
                     if let Ok(Some(t)) = store.texture(path) {
                         textures.insert(path.clone(), t);
