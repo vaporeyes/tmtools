@@ -1,11 +1,13 @@
 // ABOUTME: The contract between the tmtools shell and its modules, and the Session every module reads and drives.
 // ABOUTME: One clock is shared, so seeking in any module moves all of them.
 
+pub mod persist;
 mod session;
 pub mod theme;
 
 pub use eframe::egui_wgpu::RenderState;
 pub use session::{LoadedFile, Playback, Run, Session, SPEEDS};
+pub use persist::{setting, SavedSession, Settings};
 pub use theme::{icon_button, section, toolbar, Icon};
 
 /// A self-contained analysis tool hosted by the tmtools shell.
@@ -24,6 +26,12 @@ pub trait Module {
 
     /// Draw the module UI for this frame
     fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, wgpu: Option<&RenderState>);
+
+    /// Records settings worth keeping between launches, under keys prefixed with the module's own name
+    fn save_settings(&self, _settings: &mut Settings) {}
+
+    /// Takes back settings saved by save_settings; missing or unreadable ones keep their defaults
+    fn load_settings(&mut self, _settings: &Settings) {}
 }
 
 /// A small filled square in the run's color, for legends and lists

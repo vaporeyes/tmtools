@@ -7,7 +7,7 @@ use egui_plot::{Legend, Line, LineStyle, Plot, PlotPoints, VLine};
 use std::collections::HashMap;
 use tmreplay::format_race_time;
 use tmreplay::track::Channel;
-use tmtools_core::{Module, Session};
+use tmtools_core::{setting, Module, Session, Settings};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Graph {
@@ -61,6 +61,20 @@ impl Module for TelemetryModule {
 
     fn description(&self) -> &str {
         "Speed, gap, steering, pedals, RPM, and wheel contact over time for every visible run"
+    }
+
+    fn save_settings(&self, s: &mut Settings) {
+        for (i, shown) in self.shown.iter().enumerate() {
+            s.insert(format!("telemetry.graph{i}"), shown.to_string());
+        }
+        s.insert("telemetry.follow".into(), self.follow.to_string());
+    }
+
+    fn load_settings(&mut self, s: &Settings) {
+        for (i, shown) in self.shown.iter_mut().enumerate() {
+            *shown = setting(s, &format!("telemetry.graph{i}")).unwrap_or(*shown);
+        }
+        self.follow = setting(s, "telemetry.follow").unwrap_or(self.follow);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, _wgpu: Option<&tmtools_core::RenderState>) {

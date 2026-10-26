@@ -5,7 +5,7 @@ use egui::{Color32, RichText};
 use tmreplay::format_race_time;
 use tmreplay::report::{events, EventKind};
 use tmreplay::sectors::{best_sectors, boundaries, boundary_times, sector_durations, Boundary};
-use tmtools_core::{color_swatch, Module, RenderState, Session};
+use tmtools_core::{color_swatch, setting, Module, RenderState, Session, Settings};
 
 const BEST: Color32 = Color32::from_rgb(90, 220, 120);
 const LOSS: Color32 = Color32::from_rgb(240, 120, 110);
@@ -49,6 +49,18 @@ impl Module for RunReportModule {
 
     fn description(&self) -> &str {
         "Sector times with the theoretical best, every braking zone and turn, and exports of the focused run"
+    }
+
+    fn save_settings(&self, s: &mut Settings) {
+        for (i, shown) in self.shown.iter().enumerate() {
+            s.insert(format!("runreport.events{i}"), shown.to_string());
+        }
+    }
+
+    fn load_settings(&mut self, s: &Settings) {
+        for (i, shown) in self.shown.iter_mut().enumerate() {
+            *shown = setting(s, &format!("runreport.events{i}")).unwrap_or(*shown);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, _wgpu: Option<&RenderState>) {

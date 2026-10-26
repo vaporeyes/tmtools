@@ -8,10 +8,11 @@ use eframe::egui;
 use std::path::PathBuf;
 use tmreplay::format_race_time;
 use tmtools_core::theme::{self, FINISH, INK, INK_RAISED, INK_SOFT, TEXT, WEAK};
-use tmtools_core::{color_swatch, icon_button, section, Icon, Module, Session, SPEEDS};
+use tmtools_core::{color_swatch, icon_button, section, Icon, Module, SavedSession, Session, SPEEDS};
 
-// Where the chosen asset folder is remembered between launches
+// Where the chosen asset folder and the last session are remembered between launches
 const ASSETS_KEY: &str = "assets_dir";
+const SESSION_KEY: &str = "session";
 
 struct TmtoolsApp {
     modules: Vec<Box<dyn Module>>,
@@ -65,9 +66,19 @@ impl eframe::App for TmtoolsApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        // Scripted screenshot runs must not replace the session someone was working in
+        if self.screenshot.is_some() {
+            return;
+        }
         if let Some(store) = &self.session.assets {
             storage.set_string(ASSETS_KEY, store.root().display().to_string());
         }
+        let mut saved = self.session.save();
+        saved.active_tab = self.active;
+        for m in &self.modules {
+            m.save_settings(&mut saved.settings);
+        }
+        storage.set_string(SESSION_KEY, saved.to_json());
     }
 }
 
@@ -260,33 +271,54 @@ fn timeline(ui: &mut egui::Ui, session: &mut Session, duration: f64) {
     }
 }
 
-/// Command line: replay or Gbx paths, plus --tab NAME, --time MS, --focus N, and --assets DIR for opening straight to a view
-fn apply_args(app: &mut TmtoolsApp) {
+/// What the command line asks for: replay or Gbx paths, plus --tab NAME, --time MS, --focus N, and --assets DIR
+#[derive(Default)]
+struct Args {
+    paths: Vec<PathBuf>,
+    tab: Option<String>,
+    time: Option<f64>,
+    focus: Option<usize>,
+    assets: Option<PathBuf>,
+}
+
+fn parse_args() -> Args {
+    let mut parsed = Args::default();
     let mut args = std::env::args().skip(1);
-    let mut time = None;
-    let mut focus = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--tab" => {
-                if let Some(name) = args.next() {
-                    let wanted = name.to_lowercase();
-                    app.active = app.modules.iter().position(|m| m.name().to_lowercase().contains(&wanted)).unwrap_or(app.active);
-                }
-            }
-            "--time" => time = args.next().and_then(|t| t.parse::<f64>().ok()),
-            "--focus" => focus = args.next().and_then(|f| f.parse::<usize>().ok()),
-            "--assets" => {
-                if let Some(dir) = args.next() {
-                    app.open_assets(std::path::Path::new(&dir));
-                }
-            }
-            path => app.session.load_path(std::path::Path::new(path)),
+            "--tab" => parsed.tab = args.next(),
+            "--time" => parsed.time = args.next().and_then(|t| t.parse::<f64>().ok()),
+            "--focus" => parsed.focus = args.next().and_then(|f| f.parse::<usize>().ok()),
+            "--assets" => parsed.assets = args.next().map(PathBuf::from),
+            path => parsed.paths.push(PathBuf::from(path)),
         }
     }
-    if let Some(f) = focus.filter(|&f| f < app.session.runs.len()) {
+    parsed
+}
+
+/// The last session first, then the command line, which wins: files given there replace the remembered ones
+fn start_session(app: &mut TmtoolsApp, saved: Option<SavedSession>, args: Args) {
+    if let Some(saved) = &saved {
+        for m in &mut app.modules {
+            m.load_settings(&saved.settings);
+        }
+        app.active = saved.active_tab.min(app.modules.len().saturating_sub(1));
+        app.session.restore(saved, args.paths.is_empty());
+    }
+    if let Some(dir) = &args.assets {
+        app.open_assets(dir);
+    }
+    for path in &args.paths {
+        app.session.load_path(path);
+    }
+    if let Some(name) = &args.tab {
+        let wanted = name.to_lowercase();
+        app.active = app.modules.iter().position(|m| m.name().to_lowercase().contains(&wanted)).unwrap_or(app.active);
+    }
+    if let Some(f) = args.focus.filter(|&f| f < app.session.runs.len()) {
         app.session.focus = Some(f);
     }
-    if let Some(t) = time {
+    if let Some(t) = args.time {
         app.session.seek(t);
     }
 }
@@ -320,7 +352,9 @@ fn main() -> eframe::Result<()> {
             if let Some(dir) = remembered {
                 app.open_assets(&dir);
             }
-            apply_args(&mut app);
+            // Screenshot runs start clean, so they show exactly what the command line asks for
+            let saved = if app.screenshot.is_some() { None } else { cc.storage.and_then(|s| s.get_string(SESSION_KEY)).and_then(|j| SavedSession::from_json(&j)) };
+            start_session(&mut app, saved, parse_args());
             Ok(Box::new(app))
         }),
     )

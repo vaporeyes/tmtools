@@ -13,7 +13,7 @@ use tmreplay::gap::{position_at, rotation_at, speed_at};
 use tmreplay::grid::BlockGrid;
 use tmreplay::track::Channel;
 use tmreplay::{format_race_time, Sample};
-use tmtools_core::{Module, RenderState, Session};
+use tmtools_core::{setting, Module, RenderState, Session, Settings};
 
 // Car box in world units: half width (x), height (y), half length (z, forward)
 const CAR_HALF_WIDTH: f32 = 1.0;
@@ -104,6 +104,38 @@ impl Module for ReplayViewModule {
 
     fn description(&self) -> &str {
         "Basic 3D view of the runs: block cells, racing lines, and cars, with chase, orbit, and overview cameras"
+    }
+
+    fn save_settings(&self, s: &mut Settings) {
+        let mode = match self.mode {
+            CameraMode::Chase => "chase",
+            CameraMode::Orbit => "orbit",
+            CameraMode::Overview => "overview",
+        };
+        s.insert("replayview.camera".into(), mode.into());
+        for (key, value) in [("blocks", self.show_blocks), ("lines", self.show_lines), ("posts", self.show_posts), ("textured", self.textured), ("ghosts", self.ghosts)] {
+            s.insert(format!("replayview.{key}"), value.to_string());
+        }
+        s.insert("replayview.ghost_opacity".into(), self.ghost_opacity.to_string());
+    }
+
+    fn load_settings(&mut self, s: &Settings) {
+        match s.get("replayview.camera").map(String::as_str) {
+            Some("chase") => self.mode = CameraMode::Chase,
+            Some("orbit") => self.mode = CameraMode::Orbit,
+            Some("overview") => {
+                self.mode = CameraMode::Overview;
+                self.distance = 900.0;
+            }
+            _ => {}
+        }
+        let flag = |key: &str, current: bool| setting(s, &format!("replayview.{key}")).unwrap_or(current);
+        self.show_blocks = flag("blocks", self.show_blocks);
+        self.show_lines = flag("lines", self.show_lines);
+        self.show_posts = flag("posts", self.show_posts);
+        self.textured = flag("textured", self.textured);
+        self.ghosts = flag("ghosts", self.ghosts);
+        self.ghost_opacity = setting::<f32>(s, "replayview.ghost_opacity").map_or(self.ghost_opacity, |o| o.clamp(0.1, 1.0));
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, wgpu: Option<&RenderState>) {

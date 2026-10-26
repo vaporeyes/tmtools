@@ -8,7 +8,7 @@ use tmreplay::gap::position_at;
 use tmreplay::grid::BlockGrid;
 use tmreplay::track::Channel;
 use tmreplay::{format_race_time, Sample};
-use tmtools_core::{color_swatch, Module, Session};
+use tmtools_core::{color_swatch, setting, Module, Session, Settings};
 
 const BRAKE: Color32 = Color32::from_rgb(229, 72, 77);
 const LIFT: Color32 = Color32::from_rgb(255, 150, 40);
@@ -78,6 +78,21 @@ impl Module for TrajMapModule {
 
     fn description(&self) -> &str {
         "Top-down racing lines over the block grid, with braking, lift, and checkpoint markers"
+    }
+
+    fn save_settings(&self, s: &mut Settings) {
+        for (key, value) in self.flags() {
+            s.insert(format!("trajmap.{key}"), value.to_string());
+        }
+    }
+
+    fn load_settings(&mut self, s: &Settings) {
+        let flag = |key: &str, current: bool| setting(s, &format!("trajmap.{key}")).unwrap_or(current);
+        self.show_blocks = flag("blocks", self.show_blocks);
+        self.show_brakes = flag("brakes", self.show_brakes);
+        self.show_lifts = flag("lifts", self.show_lifts);
+        self.show_checkpoints = flag("checkpoints", self.show_checkpoints);
+        self.markers_all_runs = flag("markers_all_runs", self.markers_all_runs);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, _wgpu: Option<&tmtools_core::RenderState>) {
@@ -267,6 +282,16 @@ impl Module for TrajMapModule {
 }
 
 impl TrajMapModule {
+    fn flags(&self) -> [(&'static str, bool); 5] {
+        [
+            ("blocks", self.show_blocks),
+            ("brakes", self.show_brakes),
+            ("lifts", self.show_lifts),
+            ("checkpoints", self.show_checkpoints),
+            ("markers_all_runs", self.markers_all_runs),
+        ]
+    }
+
     /// The focused run's gaps and gain rates against the reference, computed once per pair of runs
     fn gains(&mut self, session: &Session, focus: usize, reference: usize) -> &GainCache {
         let key = (run_identity(session, focus), run_identity(session, reference));

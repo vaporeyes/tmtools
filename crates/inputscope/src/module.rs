@@ -7,7 +7,7 @@ use tmreplay::format_race_time;
 use std::sync::Arc;
 use tmreplay::gap::{matching_press, TimeWarp};
 use tmreplay::track::{tick_of, Channel, Hold, InputTrack, TICK_MS};
-use tmtools_core::{color_swatch, Module, Session};
+use tmtools_core::{color_swatch, setting, Module, Session, Settings};
 
 const ROW_H: f32 = 18.0;
 const GROUP_GAP: f32 = 6.0;
@@ -73,6 +73,26 @@ impl Module for InputScopeModule {
 
     fn description(&self) -> &str {
         "Tick-exact piano roll of the inputs, hold statistics, and press timing against another run"
+    }
+
+    fn save_settings(&self, s: &mut Settings) {
+        s.insert("inputscope.follow".into(), self.follow.to_string());
+        s.insert("inputscope.align_position".into(), self.align_position.to_string());
+        s.insert("inputscope.ms_per_px".into(), self.view.ms_per_px.to_string());
+        for (i, shown) in self.channels.iter().enumerate() {
+            s.insert(format!("inputscope.channel{i}"), shown.to_string());
+        }
+    }
+
+    fn load_settings(&mut self, s: &Settings) {
+        self.follow = setting(s, "inputscope.follow").unwrap_or(self.follow);
+        self.align_position = setting(s, "inputscope.align_position").unwrap_or(self.align_position);
+        if let Some(scale) = setting::<f64>(s, "inputscope.ms_per_px").filter(|v| v.is_finite() && *v > 0.0) {
+            self.view.zoom_about(scale / self.view.ms_per_px, 0.0);
+        }
+        for (i, shown) in self.channels.iter_mut().enumerate() {
+            *shown = setting(s, &format!("inputscope.channel{i}")).unwrap_or(*shown);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, _wgpu: Option<&tmtools_core::RenderState>) {

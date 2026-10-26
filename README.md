@@ -70,6 +70,12 @@ Open replays with **Open...** or by dropping `.Gbx` files on the window. Any
 Gbx file loads; files that are not replays are still available to the
 inspector.
 
+tmtools remembers the last session: the replays you had open (those still on
+disk), the focused and hidden runs, placed sector splits, the playback time
+and speed, the active tab, and each module's settings (camera, overlays,
+graphs, filters). Files given on the command line open instead of the
+remembered ones.
+
 ## Game assets
 
 The Replay Viewer can draw maps and cars with the game's own meshes and
@@ -146,7 +152,8 @@ too far apart to compare. Hovering then also shows the gap and its trend.
 The sector table covers the focused run and every visible run on the same
 map. Sectors end at each checkpoint and at each split placed with **Place
 splits** on the Trajectory Map (click the focused line to place one,
-right-click a split to remove it; splits are kept per map while the app runs).
+right-click a split to remove it; splits are kept per map and remembered
+between launches).
 Each run's time at a placed split is when it passes that point, matched in
 order along the track. The best time of each sector is highlighted, others
 show what they lose to it, and the **Best** row adds up to the theoretical
