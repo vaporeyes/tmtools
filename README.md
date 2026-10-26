@@ -13,7 +13,8 @@ any tab moves all of them:
 - **Trajectory Map** - a top-down view of the block grid with racing lines
   colored by speed and markers for braking, gas lifts, respawns, and
   checkpoints.
-- **Replay Viewer** - a basic 3D wireframe view with chase, orbit, and
+- **Replay Viewer** - the runs in 3D with the game's own meshes and textures
+  (from an asset export), or a wireframe without one, with chase, orbit, and
   overview cameras and an input HUD.
 - **Gbx Inspector** - the header, header chunks, body chunk tree, and a hex
   view of any Gbx file or a replay's embedded map.
@@ -26,6 +27,7 @@ tmtools/
     gbx/            Gbx container, LZO, chunk loop, node references, class IDs
     tmreplay/       replay and map parsing, input tracks, gaps, block grid
     tmassets/       asset export reading: meshes, textures, materials, data
+    tmscene/        block placement, moods, and drawable map and car parts
     tmtools-core/   Module trait and the shared Session (runs, focus, clock)
     inputscope/     Input Analyzer module
     telemetry/      Telemetry Graphs module
@@ -124,11 +126,17 @@ read time, speed, and inputs; click it to seek there.
 
 ## Replay Viewer
 
-A wireframe view projected on the CPU with egui's painter, so it needs no
-exported meshes. Cars are oriented boxes sized like a TMF car. **Chase**
-follows the focused car; **Orbit car** and **Overview** turn with a drag and
-zoom with the wheel. The HUD shows time, speed, and the arrow keys lit to
-the share held.
+With an asset export set, the viewer draws the map and cars as the web viewer
+in gbx-tools-3d-node does: blocks placed by the same rules (variants,
+rotations, default terrain, clips, terrain modifiers), the decoration around
+the track, the vehicle meshes, real textures with layered grass, and the map's
+mood (sky gradient, sun, ambient light, and fog). It renders with wgpu into a
+4x multisampled image; the map loads on a background thread and the wireframe
+shows until it is ready. **Game textures** switches back to the wireframe.
+
+**Chase** uses each vehicle's own chase camera settings from the export;
+**Orbit car** and **Overview** turn with a drag and zoom with the wheel. The
+HUD shows time, speed, and the arrow keys lit to the share held.
 
 ## Gbx Inspector
 
@@ -150,6 +158,10 @@ math.
 export and checks that the names built from its data resolve. Set
 `TMTOOLS_ASSETS_DIR` to the export to run it.
 
+`crates/tmscene/tests/library.rs` checks block placement against the web
+viewer's on real maps and builds every map's scene from the export; it needs
+both `TMTOOLS_REPLAY_DIR` and `TMTOOLS_ASSETS_DIR`.
+
 `crates/tmreplay/tests/library.rs` compares the parser against the
 TypeScript parser's output for a folder of real replays. Set
 `TMTOOLS_REPLAY_DIR` to that folder to run it; without it the test is
@@ -164,15 +176,18 @@ the layout settles, then exits:
 TMTOOLS_SCREENSHOT=/tmp/shot.png cargo run -p tmtools-app -- a.Replay.Gbx --tab map
 ```
 
+`TMTOOLS_SCREENSHOT_DELAY_MS` waits longer first, for example while a map
+loads.
+
 ## Known limitations
 
 - Only TMF-era binary Gbx files are read; TM2020 replays are not supported.
 - TMUnlimiter maps hide their real blocks, so their maps show only the runs.
-- Block cells are one grid square each; multi-square blocks and block shapes
-  need the exported assets that gbx-tools-3d-node uses.
-- Ground height comes from a small table of environment and map sizes; maps
-  with unusual sizes fall back to a default and may sit at the wrong height in
-  the 3D view.
+- Without an asset export, block cells are one grid square each and ground
+  height comes from a small table of environment and map sizes.
+- The textured view leaves out normal and specular maps, wheel animation, and
+  night lightmaps; materials the web viewer draws as see-through are drawn the
+  same way here.
 
 ## License
 

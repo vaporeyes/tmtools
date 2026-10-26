@@ -1,14 +1,19 @@
-// ABOUTME: ReplayViewModule UI: picks the camera, draws block cells, racing lines, and the cars as oriented boxes at
-// ABOUTME: the playhead, with a corner HUD of the focused run's speed and tick-exact inputs.
+// ABOUTME: ReplayViewModule UI: picks the camera and draws the runs at the playhead, textured from the game assets when
+// ABOUTME: an export is set (wireframe cells and boxes otherwise), with a corner HUD of the focused run's speed and inputs.
 
 use crate::camera::{Camera, Projector};
+use crate::gpu::{DrawCallback, FrameRequest, FrameUniform, LineVertex, Renderer};
+use crate::loader::{scene_key, SceneLoad};
+use eframe::egui_wgpu;
+use std::collections::HashMap;
+use tmassets::Vehicle;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
-use glam::{Quat, Vec3};
+use glam::{Mat4, Quat, Vec3};
 use tmreplay::gap::{position_at, rotation_at, speed_at};
 use tmreplay::grid::BlockGrid;
 use tmreplay::track::Channel;
 use tmreplay::{format_race_time, Sample};
-use tmtools_core::{Module, Session};
+use tmtools_core::{Module, RenderState, Session};
 
 // Car box in world units: half width (x), height (y), half length (z, forward)
 const CAR_HALF_WIDTH: f32 = 1.0;
@@ -24,6 +29,9 @@ enum CameraMode {
     Overview,
 }
 
+// A run without a vehicle name drives the Stadium car, as the web viewer assumes
+const DEFAULT_VEHICLE: &str = "StadiumCar";
+
 pub struct ReplayViewModule {
     mode: CameraMode,
     yaw: f32,
@@ -31,12 +39,41 @@ pub struct ReplayViewModule {
     distance: f32,
     show_blocks: bool,
     show_lines: bool,
+    /// Draw with the game assets when an export is set
+    textured: bool,
+    load: Option<SceneLoad>,
+    /// The scene the GPU holds, and how it is lit
+    ready: Option<ReadyScene>,
+    /// Camera settings per vehicle from the export
+    vehicle_info: HashMap<String, Vehicle>,
+    status: Option<String>,
+}
+
+struct ReadyScene {
+    key: String,
+    mood: tmscene::mood::Mood,
 }
 
 impl Default for ReplayViewModule {
     fn default() -> Self {
-        Self { mode: CameraMode::Chase, yaw: -1.2, pitch: 0.45, distance: 40.0, show_blocks: true, show_lines: true }
+        Self {
+            mode: CameraMode::Chase,
+            yaw: -1.2,
+            pitch: 0.45,
+            distance: 40.0,
+            show_blocks: true,
+            show_lines: true,
+            textured: true,
+            load: None,
+            ready: None,
+            vehicle_info: HashMap::new(),
+            status: None,
+        }
     }
+}
+
+fn vehicle_name(session: &Session, run: usize) -> String {
+    session.ghost(run).vehicle.clone().unwrap_or_else(|| DEFAULT_VEHICLE.to_owned())
 }
 
 fn v3(v: tmreplay::Vec3) -> Vec3 {
@@ -58,7 +95,7 @@ impl Module for ReplayViewModule {
         "Basic 3D view of the runs: block cells, racing lines, and cars, with chase, orbit, and overview cameras"
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session) {
+    fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, wgpu: Option<&RenderState>) {
         let Some(focus) = session.focus else {
             ui.centered_and_justified(|ui| ui.label("Open a replay to watch it."));
             return;
@@ -73,6 +110,9 @@ impl Module for ReplayViewModule {
                 }
             }
             ui.separator();
+            if session.assets.is_some() && wgpu.is_some() {
+                ui.checkbox(&mut self.textured, "Game textures").on_hover_text("Draw the map and cars with the asset export's meshes and textures");
+            }
             ui.checkbox(&mut self.show_blocks, "Blocks");
             ui.checkbox(&mut self.show_lines, "Racing lines");
             ui.label(egui::RichText::new("Orbit and overview: drag to turn, wheel to zoom").weak().small());
@@ -97,11 +137,21 @@ impl Module for ReplayViewModule {
             ui.label("This run has no samples to show.");
             return;
         };
-        let camera = match self.mode {
-            CameraMode::Chase => Camera::chase(car_pos, car_rot * Vec3::Z),
-            CameraMode::Orbit => Camera::orbit(car_pos, self.yaw, self.pitch, self.distance),
-            CameraMode::Overview => Camera::orbit(run_center(samples), self.yaw, self.pitch.max(0.5), self.distance),
+        let info = self.vehicle_info.get(&vehicle_name(session, focus));
+        let camera = match (self.mode, info) {
+            // The game's chase camera for this vehicle, once the export's vehicle data is loaded
+            (CameraMode::Chase, Some(v)) => Camera::behind(car_pos, car_rot * Vec3::Z, v.camera_far, v.camera_up, v.camera_look_at_factor, v.camera_fov),
+            (CameraMode::Chase, None) => Camera::chase(car_pos, car_rot * Vec3::Z),
+            (CameraMode::Orbit, _) => Camera::orbit(car_pos, self.yaw, self.pitch, self.distance),
+            (CameraMode::Overview, _) => Camera::orbit(run_center(samples), self.yaw, self.pitch.max(0.5), self.distance),
         };
+
+        if let Some(rs) = wgpu.filter(|_| self.textured) {
+            if self.draw_textured(ui, rect, session, focus, &camera, rs) {
+                hud(&ui.painter_at(rect), rect, session, focus, now);
+                return;
+            }
+        }
         let pr = camera.projector(rect);
 
         let painter = ui.painter_at(rect);
@@ -130,7 +180,93 @@ impl Module for ReplayViewModule {
         }
 
         hud(&painter, rect, session, focus, now);
+        if let Some(status) = &self.status {
+            painter.text(rect.left_top() + Vec2::new(12.0, 12.0), Align2::LEFT_TOP, status, FontId::proportional(14.0), Color32::from_gray(220));
+        }
     }
+}
+
+impl ReplayViewModule {
+    /// Draws the runs with the game assets; false while the scene is loading or when there is no export, so the
+    /// wireframe view is drawn instead
+    fn draw_textured(&mut self, ui: &mut egui::Ui, rect: Rect, session: &Session, focus: usize, camera: &Camera, rs: &RenderState) -> bool {
+        let Some(store) = session.assets.clone() else {
+            self.status = None;
+            return false;
+        };
+        let runs: Vec<usize> = session.visible_runs().collect();
+        let mut vehicles: Vec<String> = runs.iter().map(|&r| vehicle_name(session, r)).collect();
+        vehicles.sort();
+        vehicles.dedup();
+        let map = &session.replay(focus).map;
+        let key = scene_key(map, &vehicles);
+
+        // Start loading when the map or the set of vehicles changes
+        let current = self.ready.as_ref().map(|r| r.key.as_str());
+        if current != Some(key.as_str()) && self.load.as_ref().is_none_or(|l| l.key != key) {
+            self.load = Some(SceneLoad::start(store, map.clone(), vehicles.clone()));
+            self.status = Some("Loading the map with game assets...".into());
+        }
+        // Keep checking on the background load until it lands
+        if self.load.is_some() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        if let Some(loaded) = self.load.as_ref().and_then(SceneLoad::poll) {
+            self.load = None;
+            let mut egui_renderer = rs.renderer.write();
+            let mut renderer = egui_renderer.callback_resources.remove::<Renderer>().unwrap_or_else(|| Renderer::new(&rs.device, &rs.queue));
+            renderer.upload(&rs.device, &rs.queue, &loaded);
+            egui_renderer.callback_resources.insert(renderer);
+            let missing = loaded.map.as_ref().map_or(0, |m| m.missing.len() + m.failed.len());
+            self.status = loaded.error.clone().or_else(|| (missing > 0).then(|| format!("{missing} block variants have no data in the export")));
+            self.vehicle_info.extend(loaded.vehicle_info);
+            let mood = loaded.map.as_ref().map_or_else(|| tmscene::mood::mood_for(map.decoration.as_deref(), map.collection.as_deref()), |m| m.mood);
+            self.ready = Some(ReadyScene { key: loaded.key, mood });
+        }
+        let Some(ready) = self.ready.as_ref().filter(|r| r.key == key) else { return false };
+
+        let now = session.playback.time_ms as f32;
+        let cars = runs
+            .iter()
+            .filter_map(|&r| car_pose(&session.ghost(r).samples, now).map(|(p, q)| (vehicle_name(session, r), Mat4::from_rotation_translation(q, p))))
+            .collect();
+        let lines = if self.show_lines { racing_lines(session, &runs, focus) } else { Vec::new() };
+        let aspect = rect.width() / rect.height().max(1.0);
+        let uniform = FrameUniform::new(camera.view_proj(aspect), camera.eye, &ready.mood);
+
+        let pixels = rect.size() * ui.ctx().pixels_per_point();
+        let texture = {
+            let mut egui_renderer = rs.renderer.write();
+            let mut renderer = egui_renderer.callback_resources.remove::<Renderer>().unwrap_or_else(|| Renderer::new(&rs.device, &rs.queue));
+            let id = renderer.ensure_targets(&rs.device, &mut egui_renderer, [pixels.x.round() as u32, pixels.y.round() as u32]);
+            renderer.set_request(FrameRequest { uniform, cars, lines });
+            egui_renderer.callback_resources.insert(renderer);
+            id
+        };
+        let painter = ui.painter_at(rect);
+        painter.add(egui_wgpu::Callback::new_paint_callback(rect, DrawCallback));
+        painter.image(texture, rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+        if let Some(status) = &self.status {
+            painter.text(rect.left_top() + Vec2::new(12.0, 12.0), Align2::LEFT_TOP, status, FontId::proportional(14.0), Color32::from_gray(235));
+        }
+        true
+    }
+}
+
+/// Each visible run's path as line segments, lifted off the road; the focused run's is stronger
+fn racing_lines(session: &Session, runs: &[usize], focus: usize) -> Vec<LineVertex> {
+    let mut out = Vec::new();
+    for &run in runs {
+        let c = session.runs[run].color;
+        let alpha = if run == focus { 0.9 } else { 0.5 };
+        let color = [c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0, alpha];
+        let points: Vec<[f32; 3]> = session.ghost(run).samples.iter().map(|s| [s.position.x, s.position.y + 0.15, s.position.z]).collect();
+        for pair in points.windows(2) {
+            out.push(LineVertex { position: pair[0], color });
+            out.push(LineVertex { position: pair[1], color });
+        }
+    }
+    out
 }
 
 fn run_center(samples: &[Sample]) -> Vec3 {

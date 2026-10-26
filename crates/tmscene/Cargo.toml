@@ -1,0 +1,12 @@
+# ABOUTME: tmscene crate: turns a replay's map and an asset export into drawable data (block placement, mesh parts
+# ABOUTME: with instances and materials, decoration, vehicles, and the map's lighting mood). No UI or GPU.
+[package]
+name = "tmscene"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tmreplay = { path = "../tmreplay" }
+tmassets = { path = "../tmassets" }
+glam.workspace = true

@@ -63,7 +63,7 @@ impl Module for TelemetryModule {
         "Speed, gap, steering, pedals, RPM, and wheel contact over time for every visible run"
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session) {
+    fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, _wgpu: Option<&tmtools_core::RenderState>) {
         let Some(focus) = session.focus else {
             ui.centered_and_justified(|ui| ui.label("Open a replay to plot its telemetry."));
             return;

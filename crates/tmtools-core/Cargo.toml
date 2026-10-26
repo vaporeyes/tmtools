@@ -10,3 +10,4 @@ license.workspace = true
 tmreplay = { path = "../tmreplay" }
 tmassets = { path = "../tmassets" }
 egui.workspace = true
+eframe.workspace = true

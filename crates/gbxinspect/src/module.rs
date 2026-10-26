@@ -40,7 +40,7 @@ impl Module for GbxInspectModule {
         "Header, chunk tree, and hex view of any loaded Gbx file or a replay's embedded map"
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session) {
+    fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, _wgpu: Option<&tmtools_core::RenderState>) {
         if session.files.is_empty() {
             ui.centered_and_justified(|ui| ui.label("Open any .Gbx file to inspect it."));
             return;

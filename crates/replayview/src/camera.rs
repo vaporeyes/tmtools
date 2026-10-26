@@ -28,11 +28,25 @@ impl Camera {
         Self { eye: position - flat * 13.0 + Vec3::Y * 4.5, target: position + flat * 6.0 + Vec3::Y * 1.0, fov_y: 65f32.to_radians() }
     }
 
-    pub fn projector(&self, rect: Rect) -> Projector {
-        let aspect = (rect.width() / rect.height().max(1.0)).max(0.01);
+    /// Behind a car along its horizontal heading, raised, looking partly ahead, with the vehicle's own camera
+    /// settings (distance, height, look-ahead, and field of view in degrees), as the game's chase camera does
+    pub fn behind(position: Vec3, forward: Vec3, far: f32, up: f32, look_at_factor: f32, fov_degrees: f32) -> Self {
+        let heading = Vec3::new(forward.x, 0.0, forward.z).try_normalize().unwrap_or(Vec3::Z);
+        let eye = position - heading * far + Vec3::Y * up;
+        let ahead = Vec3::new(position.x + heading.x * far, position.y + up, position.z + heading.z * far);
+        let target = position.lerp(ahead, look_at_factor) - Vec3::Y;
+        Self { eye, target, fov_y: fov_degrees.to_radians() }
+    }
+
+    /// The combined view and projection for a viewport of this aspect ratio, with depth from 0 (near) to 1 (far)
+    pub fn view_proj(&self, aspect: f32) -> Mat4 {
         let view = glam::camera::rh::view::look_at_mat4(self.eye, self.target, Vec3::Y);
-        let proj = glam::camera::rh::proj::directx::perspective(self.fov_y, aspect, NEAR, FAR);
-        Projector { view_proj: proj * view, rect }
+        let proj = glam::camera::rh::proj::directx::perspective(self.fov_y, aspect.max(0.01), NEAR, FAR);
+        proj * view
+    }
+
+    pub fn projector(&self, rect: Rect) -> Projector {
+        Projector { view_proj: self.view_proj(rect.width() / rect.height().max(1.0)), rect }
     }
 }
 
@@ -100,6 +114,13 @@ mod tests {
         assert!(a.x.is_finite() && b.x.is_finite());
         // Higher up in the world is higher on the screen
         assert!(pr.point(Vec3::new(0.0, 1.0, -10.0)).unwrap().y < 300.0);
+    }
+
+    #[test]
+    fn the_vehicle_camera_follows_the_heading_and_looks_ahead() {
+        let cam = Camera::behind(Vec3::ZERO, Vec3::new(1.0, 0.5, 0.0), 4.5, 2.2, 0.88, 75.0);
+        assert!((cam.eye - Vec3::new(-4.5, 2.2, 0.0)).length() < 1e-5);
+        assert!((cam.target - Vec3::new(3.96, 2.2 * 0.88 - 1.0, 0.0)).length() < 1e-5);
     }
 
     #[test]

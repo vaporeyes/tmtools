@@ -55,7 +55,7 @@ impl Module for TrajMapModule {
         "Top-down racing lines over the block grid, with braking, lift, and checkpoint markers"
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session) {
+    fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, _wgpu: Option<&tmtools_core::RenderState>) {
         let Some(focus) = session.focus else {
             ui.centered_and_justified(|ui| ui.label("Open a replay to see its racing line."));
             return;

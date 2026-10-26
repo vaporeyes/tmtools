@@ -20,8 +20,9 @@ struct TmtoolsApp {
 }
 
 impl eframe::App for TmtoolsApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        let wgpu = frame.wgpu_render_state().cloned();
         self.session.advance(ctx.input(|i| i.stable_dt) as f64);
         if self.session.playback.playing {
             ctx.request_repaint();
@@ -51,7 +52,7 @@ impl eframe::App for TmtoolsApp {
 
         egui::CentralPanel::default().show(ui, |ui| {
             if let Some(m) = self.modules.get_mut(self.active) {
-                m.ui(ui, &mut self.session);
+                m.ui(ui, &mut self.session, wgpu.as_ref());
             }
         });
 

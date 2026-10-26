@@ -1161,6 +1161,9 @@ name = "glam"
 version = "0.33.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37bfe73dc8ec21f54d181e5a60554327ec3f1c600c455a75ccbfc65d2106a6c4"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "glifo"
@@ -2496,9 +2499,13 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 name = "replayview"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "eframe",
  "egui",
  "glam",
+ "tmassets",
  "tmreplay",
+ "tmscene",
  "tmtools-core",
 ]
 
@@ -2982,6 +2989,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tmscene"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "tmassets",
+ "tmreplay",
+]
+
+[[package]]
 name = "tmtools-app"
 version = "0.1.0"
 dependencies = [
@@ -3002,6 +3018,7 @@ dependencies = [
 name = "tmtools-core"
 version = "0.1.0"
 dependencies = [
+ "eframe",
  "egui",
  "tmassets",
  "tmreplay",

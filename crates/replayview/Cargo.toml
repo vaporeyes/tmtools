@@ -1,5 +1,5 @@
-# ABOUTME: replayview module: a basic 3D replay viewer drawn with egui's painter: block cells, racing lines, and
-# ABOUTME: the cars as oriented boxes, with chase, orbit, and overview cameras and a small input HUD.
+# ABOUTME: replayview module: the 3D replay viewer. Renders map and cars with the game assets through wgpu, or a
+# ABOUTME: wireframe through egui's painter without them, with chase, orbit, and overview cameras and an input HUD.
 [package]
 name = "replayview"
 version.workspace = true
@@ -10,4 +10,8 @@ license.workspace = true
 tmtools-core = { path = "../tmtools-core" }
 tmreplay = { path = "../tmreplay" }
 egui.workspace = true
-glam.workspace = true
+tmassets = { path = "../tmassets" }
+tmscene = { path = "../tmscene" }
+glam = { workspace = true, features = ["bytemuck"] }
+eframe.workspace = true
+bytemuck = { version = "1", features = ["derive"] }

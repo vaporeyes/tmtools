@@ -66,7 +66,7 @@ impl Module for InputScopeModule {
         "Tick-exact piano roll of the inputs, hold statistics, and press timing against another run"
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session) {
+    fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, _wgpu: Option<&tmtools_core::RenderState>) {
         let Some(focus) = session.focus else {
             ui.centered_and_justified(|ui| ui.label("Open a replay to analyze its inputs."));
             return;
