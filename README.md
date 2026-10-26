@@ -70,6 +70,13 @@ Open replays with **Open...** or by dropping `.Gbx` files on the window. Any
 Gbx file loads; files that are not replays are still available to the
 inspector.
 
+**Library...** opens replays from a
+[gbx-tools-3d-node](https://github.com/vaporeyes/gbx-tools-3d-node) replay
+service: set its address (for a private site, put the user and password in it,
+as in `https://user:password@host`), search by map or player, and open one.
+Downloads are kept in the system cache folder (`tmtools/library`), so they open
+again with the session. `--library` opens the window at startup.
+
 tmtools remembers the last session: the replays you had open (those still on
 disk), the focused and hidden runs, placed sector splits, the playback time
 and speed, the active tab, and each module's settings (camera, overlays,
@@ -225,6 +232,9 @@ export and checks that the names built from its data resolve. Set
 `crates/tmscene/tests/library.rs` checks block placement against the web
 viewer's on real maps and builds every map's scene from the export; it needs
 both `TMTOOLS_REPLAY_DIR` and `TMTOOLS_ASSETS_DIR`.
+
+`crates/tmtools-app/src/library.rs` lists and downloads from a running replay
+service when `TMTOOLS_SERVICE_URL` is set (such as `http://localhost:5080`).
 
 `crates/tmreplay/tests/library.rs` compares the parser against the
 TypeScript parser's output for a folder of real replays. Set

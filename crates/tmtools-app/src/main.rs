@@ -2,6 +2,7 @@
 // ABOUTME: playback bar every module shares. Register additional modules by pushing them into the registry in main.
 
 mod fonts;
+mod library;
 mod screenshot;
 
 use eframe::egui;
@@ -19,6 +20,7 @@ struct TmtoolsApp {
     active: usize,
     session: Session,
     screenshot: Option<screenshot::Screenshot>,
+    library: library::LibraryWindow,
 }
 
 impl eframe::App for TmtoolsApp {
@@ -51,8 +53,12 @@ impl eframe::App for TmtoolsApp {
 
         egui::Panel::left("tmtools-runs").default_size(270.0).resizable(true).show(ui, |ui| {
             egui::Panel::bottom("tmtools-assets").show(ui, |ui| assets_panel(ui, &mut self.session));
-            runs_panel(ui, &mut self.session);
+            if runs_panel(ui, &mut self.session) {
+                self.library.open = true;
+                self.library.refresh();
+            }
         });
+        self.library.ui(&ctx, &mut self.session);
 
         egui::CentralPanel::default().show(ui, |ui| {
             if let Some(m) = self.modules.get_mut(self.active) {
@@ -75,6 +81,7 @@ impl eframe::App for TmtoolsApp {
         }
         let mut saved = self.session.save();
         saved.active_tab = self.active;
+        saved.settings.insert("shell.library_url".into(), self.library.url.clone());
         for m in &self.modules {
             m.save_settings(&mut saved.settings);
         }
@@ -116,11 +123,16 @@ impl TmtoolsApp {
     }
 }
 
-fn runs_panel(ui: &mut egui::Ui, session: &mut Session) {
+/// The loaded files and their runs; returns true when the replay library was asked for
+fn runs_panel(ui: &mut egui::Ui, session: &mut Session) -> bool {
+    let mut library = false;
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         section(ui, "Files");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("Library...").on_hover_text("Open replays from a gbx-tools-3d-node replay service").clicked() {
+                library = true;
+            }
             if ui.button("Open...").on_hover_text("Open replays or any Gbx file; you can also drop files on the window").clicked() {
                 if let Some(paths) = rfd::FileDialog::new().add_filter("Gbx", &["gbx", "Gbx", "GBX"]).pick_files() {
                     for path in paths {
@@ -140,8 +152,8 @@ fn runs_panel(ui: &mut egui::Ui, session: &mut Session) {
 
     if session.files.is_empty() {
         ui.add_space(20.0);
-        ui.vertical_centered(|ui| ui.label(egui::RichText::new("Drop .Replay.Gbx files here\nor use Open.").color(WEAK)));
-        return;
+        ui.vertical_centered(|ui| ui.label(egui::RichText::new("Drop .Replay.Gbx files here\nor use Open or Library.").color(WEAK)));
+        return library;
     }
 
     let mut remove = None;
@@ -185,6 +197,7 @@ fn runs_panel(ui: &mut egui::Ui, session: &mut Session) {
     if let Some(f) = remove {
         session.remove_file(f);
     }
+    library
 }
 
 /// The asset export setting, at the foot of the side panel
@@ -271,7 +284,8 @@ fn timeline(ui: &mut egui::Ui, session: &mut Session, duration: f64) {
     }
 }
 
-/// What the command line asks for: replay or Gbx paths, plus --tab NAME, --time MS, --focus N, and --assets DIR
+/// What the command line asks for: replay or Gbx paths, plus --tab NAME, --time MS, --focus N, --assets DIR, and
+/// --library (open the replay library window)
 #[derive(Default)]
 struct Args {
     paths: Vec<PathBuf>,
@@ -279,6 +293,7 @@ struct Args {
     time: Option<f64>,
     focus: Option<usize>,
     assets: Option<PathBuf>,
+    library: bool,
 }
 
 fn parse_args() -> Args {
@@ -290,6 +305,7 @@ fn parse_args() -> Args {
             "--time" => parsed.time = args.next().and_then(|t| t.parse::<f64>().ok()),
             "--focus" => parsed.focus = args.next().and_then(|f| f.parse::<usize>().ok()),
             "--assets" => parsed.assets = args.next().map(PathBuf::from),
+            "--library" => parsed.library = true,
             path => parsed.paths.push(PathBuf::from(path)),
         }
     }
@@ -303,6 +319,9 @@ fn start_session(app: &mut TmtoolsApp, saved: Option<SavedSession>, args: Args) 
             m.load_settings(&saved.settings);
         }
         app.active = saved.active_tab.min(app.modules.len().saturating_sub(1));
+        if let Some(url) = saved.settings.get("shell.library_url") {
+            app.library.url = url.clone();
+        }
         app.session.restore(saved, args.paths.is_empty());
     }
     if let Some(dir) = &args.assets {
@@ -320,6 +339,10 @@ fn start_session(app: &mut TmtoolsApp, saved: Option<SavedSession>, args: Args) 
     }
     if let Some(t) = args.time {
         app.session.seek(t);
+    }
+    if args.library {
+        app.library.open = true;
+        app.library.refresh();
     }
 }
 
@@ -344,7 +367,7 @@ fn main() -> eframe::Result<()> {
                 Box::new(replayview::ReplayViewModule::default()),
                 Box::new(gbxinspect::GbxInspectModule::default()),
             ];
-            let mut app = TmtoolsApp { modules, active: 0, session: Session::default(), screenshot: screenshot::Screenshot::from_env() };
+            let mut app = TmtoolsApp { modules, active: 0, session: Session::default(), screenshot: screenshot::Screenshot::from_env(), library: library::LibraryWindow::default() };
             // The asset folder comes from the environment, else the one chosen last time; --assets overrides both
             let remembered = std::env::var_os("TMTOOLS_ASSETS_DIR")
                 .map(PathBuf::from)
