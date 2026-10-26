@@ -510,13 +510,13 @@ impl Renderer {
                 pass.set_index_buffer(part.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..part.index_count, 0, 0..part.instance_count);
             }
-            if wanted == Pass::Opaque {
-                if let Some((buffer, count)) = &self.lines {
-                    pass.set_pipeline(&self.line);
-                    pass.set_vertex_buffer(0, buffer.slice(..));
-                    pass.draw(0..*count, 0..1);
-                }
-            }
+        }
+        // Lines last: road surfaces are blended and drawn after opaque parts, so earlier lines would be painted over.
+        // They still test depth, so walls and blocks in front hide them.
+        if let Some((buffer, count)) = &self.lines {
+            pass.set_pipeline(&self.line);
+            pass.set_vertex_buffer(0, buffer.slice(..));
+            pass.draw(0..*count, 0..1);
         }
     }
 }
