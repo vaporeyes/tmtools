@@ -108,6 +108,10 @@ tick.
 - Drag to pan, scroll to zoom, and click to seek to a tick. **Ticks** zooms in
   until each tick is a column; **Fit run** shows the whole run.
 - Respawns are purple lines and checkpoints blue lines.
+- **Align by track position** draws the compared run's rows where its car
+  was on the track instead of at its race time, so both drivers' inputs for
+  the same corner line up; hold labels keep their real lengths, and hovering
+  shows the compared run's inputs at that spot along with its own clock.
 - **Compare with** adds a second run's rows. The hold table then shows, for
   each press and release, when the other run did the same thing at the spot
   where this run did it: for example "0.04 earlier" means the other driver

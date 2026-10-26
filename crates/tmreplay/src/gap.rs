@@ -128,6 +128,60 @@ pub fn gain_rates(focus: &[Sample], gaps: &[Option<f32>], window_ms: i32) -> Vec
         .collect()
 }
 
+/// Maps another run's race times to the focused run's: when the focused car was at the spot where the other car is.
+/// Built from the other run's samples, kept monotonic so time never runs backwards, and held at a constant offset
+/// beyond its ends.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimeWarp {
+    /// (other run's time, focused run's time), both rising
+    pairs: Vec<(f32, f32)>,
+}
+
+impl TimeWarp {
+    pub fn new(focus: &[Sample], other: &[Sample]) -> Self {
+        let mut pairs: Vec<(f32, f32)> = Vec::with_capacity(other.len());
+        for s in other {
+            let u = s.time_ms as f32;
+            if let Some(gap) = live_gap_ms(other, u, focus) {
+                let f = (u + gap).max(pairs.last().map_or(f32::MIN, |p| p.1));
+                pairs.push((u, f));
+            }
+        }
+        Self { pairs }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pairs.is_empty()
+    }
+
+    fn map(pairs: &[(f32, f32)], t: f32, forward: bool) -> f32 {
+        let key = |p: &(f32, f32)| if forward { p.0 } else { p.1 };
+        let value = |p: &(f32, f32)| if forward { p.1 } else { p.0 };
+        let Some((first, last)) = pairs.first().zip(pairs.last()) else { return t };
+        if t <= key(first) {
+            return t - key(first) + value(first);
+        }
+        if t >= key(last) {
+            return t - key(last) + value(last);
+        }
+        let i = pairs.partition_point(|p| key(p) <= t);
+        let (a, b) = (&pairs[i - 1], &pairs[i]);
+        let span = key(b) - key(a);
+        let k = if span > 0.0 { (t - key(a)) / span } else { 0.0 };
+        value(a) + (value(b) - value(a)) * k
+    }
+
+    /// The focused run's time at the spot where the other car is at other_ms
+    pub fn to_focus(&self, other_ms: f32) -> f32 {
+        Self::map(&self.pairs, other_ms, true)
+    }
+
+    /// The other run's time at the spot where the focused car is at focus_ms
+    pub fn to_other(&self, focus_ms: f32) -> f32 {
+        Self::map(&self.pairs, focus_ms, false)
+    }
+}
+
 /// The point on one path segment nearest the spot, as (time, distance)
 fn segment_closest(a: &Sample, b: &Sample, spot: Vec3) -> (f32, f32) {
     let (t0, t1) = (a.time_ms as f32, b.time_ms as f32);
@@ -242,6 +296,21 @@ mod tests {
         assert!(same.iter().all(|r| r.is_some_and(|r| r.abs() < 1e-3)));
         // Unknown gaps give unknown rates
         assert_eq!(gain_rates(&focus, &vec![None; focus.len()], 400)[5], None);
+    }
+
+    #[test]
+    fn time_warps_map_between_the_runs_at_the_same_spot() {
+        // The slower car takes twice as long to reach each spot
+        let focus = run(10.0, 2000);
+        let slower = run(5.0, 4000);
+        let warp = TimeWarp::new(&focus, &slower);
+        assert!((warp.to_focus(2000.0) - 1000.0).abs() < 1.0);
+        assert!((warp.to_other(1000.0) - 2000.0).abs() < 1.0);
+        // Halfway between samples, and beyond the ends at a constant offset
+        assert!((warp.to_focus(1050.0) - 525.0).abs() < 1.0);
+        assert!((warp.to_focus(5000.0) - warp.to_focus(4000.0) - 1000.0).abs() < 1.0);
+        assert!(!warp.is_empty());
+        assert!(TimeWarp::new(&focus, &[]).is_empty());
     }
 
     #[test]

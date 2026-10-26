@@ -1,10 +1,11 @@
 // ABOUTME: InputScopeModule UI: the piano roll (drag to pan, wheel to zoom, click to seek to a tick), per-channel
-// ABOUTME: statistics, and the hold table, comparing presses and releases with a second run at the same spot.
+// ABOUTME: statistics, and the hold table; a second run can be aligned by race time or by position on the track.
 
 use crate::timeview::TimeView;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use tmreplay::format_race_time;
-use tmreplay::gap::matching_press;
+use std::sync::Arc;
+use tmreplay::gap::{matching_press, TimeWarp};
 use tmreplay::track::{tick_of, Channel, Hold, InputTrack, TICK_MS};
 use tmtools_core::{color_swatch, Module, Session};
 
@@ -49,11 +50,19 @@ pub struct InputScopeModule {
     channels: [bool; 4],
     fit_pending: bool,
     center_pending: bool,
+    /// Draw the compared run where its car was on the track, through a time warp, instead of at its race time
+    align_position: bool,
+    /// The warp from the compared run's times to the focused run's, for a pair of runs
+    warp: Option<((usize, usize), Arc<TimeWarp>)>,
+}
+
+fn run_identity(session: &Session, run: usize) -> usize {
+    (Arc::as_ptr(&session.files[session.runs[run].file].bytes) as usize) ^ session.runs[run].ghost
 }
 
 impl Default for InputScopeModule {
     fn default() -> Self {
-        Self { view: TimeView::default(), follow: true, compare: None, channels: [true; 4], fit_pending: false, center_pending: false }
+        Self { view: TimeView::default(), follow: true, compare: None, channels: [true; 4], fit_pending: false, center_pending: false, align_position: false, warp: None }
     }
 }
 
@@ -120,6 +129,8 @@ impl InputScopeModule {
                     }
                 }
             });
+            ui.add_enabled(self.compare.is_some(), egui::Checkbox::new(&mut self.align_position, "Align by track position"))
+                .on_hover_text("Draw the compared run's inputs where its car was on the track, so both drivers' inputs for the same corner line up");
             ui.separator();
             ui.checkbox(&mut self.follow, "Follow playhead");
             if ui.button("Fit run").clicked() {
@@ -172,6 +183,8 @@ impl InputScopeModule {
             self.view.follow(session.playback.time_ms, width);
         }
 
+        // With position alignment, the compared run's times map onto the focused run's through the warp
+        let warp = self.warp_for(session, runs);
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 4.0, Color32::from_gray(22));
         let x = |t: f64| lane.left() + self.view.x_of(t) as f32;
@@ -201,6 +214,10 @@ impl InputScopeModule {
         let mut top = rect.top();
         for &run in runs {
             let track = session.runs[run].track.as_ref().expect("rows have tracks");
+            let warp = warp.as_ref().filter(|_| run != runs[0]);
+            let to_view = |t: f64| warp.map_or(t, |w| w.to_focus(t as f32) as f64);
+            let x = |t: f64| x(to_view(t));
+            let (from, to) = warp.map_or((from, to), |w| (w.to_other(from as f32) as f64, w.to_other(to as f32) as f64));
             let group = Rect::from_min_max(Pos2::new(rect.left(), top), Pos2::new(rect.right(), top + 4.0 * ROW_H));
             painter.rect_filled(Rect::from_min_size(group.min, Vec2::new(4.0, group.height())), 0.0, session.runs[run].color);
 
@@ -238,9 +255,17 @@ impl InputScopeModule {
                 ui.strong(format!("{}  (tick {})", format_race_time(at as i64), at / TICK_MS));
                 for &run in runs {
                     let track = session.runs[run].track.as_ref().expect("rows have tracks");
+                    // A warped run is read where its car was at this spot
+                    let (run_at, note) = match warp.as_ref().filter(|_| run != runs[0]) {
+                        Some(w) => {
+                            let t = tick_of(w.to_other(at as f32).max(0.0) as f64);
+                            (t, format!(" (at {} on its clock)", format_race_time(t as i64)))
+                        }
+                        None => (at, String::new()),
+                    };
                     ui.horizontal(|ui| {
                         color_swatch(ui, session.runs[run].color);
-                        ui.label(hover_summary(track, at));
+                        ui.label(format!("{}{note}", hover_summary(track, run_at)));
                     });
                 }
             });
@@ -253,6 +278,19 @@ impl InputScopeModule {
             }
         }
         None
+    }
+
+    /// The warp for the compared run when aligning by position; None otherwise or when the runs never meet
+    fn warp_for(&mut self, session: &Session, runs: &[usize]) -> Option<Arc<TimeWarp>> {
+        if !self.align_position || runs.len() < 2 {
+            return None;
+        }
+        let key = (run_identity(session, runs[0]), run_identity(session, runs[1]));
+        if self.warp.as_ref().is_none_or(|(k, _)| *k != key) {
+            let warp = TimeWarp::new(&session.ghost(runs[0]).samples, &session.ghost(runs[1]).samples);
+            self.warp = Some((key, Arc::new(warp)));
+        }
+        self.warp.as_ref().map(|(_, w)| w.clone()).filter(|w| !w.is_empty())
     }
 
     fn stats(&mut self, ui: &mut egui::Ui, session: &Session, runs: &[usize]) {
