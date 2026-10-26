@@ -108,6 +108,26 @@ pub fn matching_press(focus: &[Sample], press_ms: i32, other: &[Sample], other_p
         .map(|(other_press_ms, offset_ms)| MatchedPress { other_at_spot_ms: at_spot, other_press_ms, offset_ms })
 }
 
+/// The reference's gap at each of the focused run's samples (see live_gap_ms): positive while the focused run is ahead
+pub fn gaps_at_samples(focus: &[Sample], reference: &[Sample]) -> Vec<Option<f32>> {
+    focus.iter().map(|s| live_gap_ms(focus, s.time_ms as f32, reference)).collect()
+}
+
+/// How fast the focused run gains on the reference at each sample, in milliseconds per second: positive while it gains,
+/// negative while it loses. The gap's slope across window_ms centered on the sample; None where the gap is unknown.
+pub fn gain_rates(focus: &[Sample], gaps: &[Option<f32>], window_ms: i32) -> Vec<Option<f32>> {
+    (0..focus.len())
+        .map(|i| {
+            let t = focus[i].time_ms;
+            let lo = focus.partition_point(|s| s.time_ms < t - window_ms / 2).min(i);
+            let hi = (focus.partition_point(|s| s.time_ms <= t + window_ms / 2).saturating_sub(1)).max(i);
+            let (a, b) = (gaps.get(lo).copied().flatten()?, gaps.get(hi).copied().flatten()?);
+            let span = (focus[hi].time_ms - focus[lo].time_ms) as f32;
+            (span > 0.0).then(|| (b - a) / span * 1000.0)
+        })
+        .collect()
+}
+
 /// The point on one path segment nearest the spot, as (time, distance)
 fn segment_closest(a: &Sample, b: &Sample, spot: Vec3) -> (f32, f32) {
     let (t0, t1) = (a.time_ms as f32, b.time_ms as f32);
@@ -207,6 +227,21 @@ mod tests {
         assert!((pass_time_after(&samples, spot, 0.0).unwrap() - 500.0).abs() < 1e-3);
         assert!((pass_time_after(&samples, spot, 600.0).unwrap() - 1500.0).abs() < 1e-3);
         assert_eq!(pass_time_after(&samples, Vec3 { x: 0.0, y: 0.0, z: 500.0 }, 0.0), None);
+    }
+
+    #[test]
+    fn gain_rates_follow_the_gaps_slope() {
+        // Twice as fast as the reference: the gap grows by one second per second of the focused run
+        let focus = run(10.0, 2000);
+        let slower = run(5.0, 4000);
+        let gaps = gaps_at_samples(&focus, &slower);
+        let rates = gain_rates(&focus, &gaps, 400);
+        assert!((rates[10].unwrap() - 1000.0).abs() < 1.0, "{:?}", rates[10]);
+        // Against itself there is nothing to gain
+        let same = gain_rates(&focus, &gaps_at_samples(&focus, &focus), 400);
+        assert!(same.iter().all(|r| r.is_some_and(|r| r.abs() < 1e-3)));
+        // Unknown gaps give unknown rates
+        assert_eq!(gain_rates(&focus, &vec![None; focus.len()], 400)[5], None);
     }
 
     #[test]

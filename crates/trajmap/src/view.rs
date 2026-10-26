@@ -84,6 +84,15 @@ pub fn speed_color(speed: f32, min: f32, max: f32) -> Color32 {
     Color32::from_rgb(mix(ca[0], cb[0]), mix(ca[1], cb[1]), mix(ca[2], cb[2]))
 }
 
+/// Red when losing time through gray to green when gaining, for a rate between -max and max
+pub fn gain_color(rate: f32, max: f32) -> Color32 {
+    let t = if max > 0.0 { (rate / max).clamp(-1.0, 1.0) } else { 0.0 };
+    let (from, to) = if t < 0.0 { ([150u8, 150, 150], [235u8, 60, 60]) } else { ([150, 150, 150], [70, 220, 110]) };
+    let k = t.abs();
+    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * k).round() as u8;
+    Color32::from_rgb(mix(from[0], to[0]), mix(from[1], to[1]), mix(from[2], to[2]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,6 +131,13 @@ mod tests {
         let samples: Vec<Sample> = (0..3).map(|i| Sample { time_ms: i * 100, position: Vec3 { x: i as f32 * 10.0, y: 0.0, z: 0.0 }, ..Default::default() }).collect();
         let (t, d) = nearest_on_path(&samples, |w| Pos2::new(w[0], w[1]), Pos2::new(15.0, 3.0)).unwrap();
         assert!((t - 150.0).abs() < 1e-3 && (d - 3.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn gain_colors_run_from_red_through_gray_to_green() {
+        assert_eq!(gain_color(-50.0, 50.0), Color32::from_rgb(235, 60, 60));
+        assert_eq!(gain_color(0.0, 50.0), Color32::from_rgb(150, 150, 150));
+        assert_eq!(gain_color(500.0, 50.0), Color32::from_rgb(70, 220, 110));
     }
 
     #[test]

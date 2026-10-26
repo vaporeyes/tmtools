@@ -1,7 +1,8 @@
-// ABOUTME: TrajMapModule UI: blocks as grid cells shaded by height, racing lines (the focused one colored by speed),
+// ABOUTME: TrajMapModule UI: blocks as grid cells shaded by height, racing lines (the focused one colored by speed or by
+// ABOUTME: time gained and lost against a reference run),
 // ABOUTME: input, checkpoint, and sector split markers, cars at the playhead; click seeks, or places a split when placing.
 
-use crate::view::{nearest_on_path, speed_color, MapView};
+use crate::view::{gain_color, nearest_on_path, speed_color, MapView};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 use tmreplay::gap::position_at;
 use tmreplay::grid::BlockGrid;
@@ -27,6 +28,25 @@ pub struct TrajMapModule {
     markers_all_runs: bool,
     /// Clicks on the focused line place sector splits instead of seeking
     placing_splits: bool,
+    /// Color the focused line by time gained and lost against this run instead of by speed
+    reference: Option<usize>,
+    gains: Option<GainCache>,
+}
+
+/// Gaps and gain rates of the focused run against the reference, kept while both stay the same
+struct GainCache {
+    key: (usize, usize),
+    gaps: Vec<Option<f32>>,
+    rates: Vec<Option<f32>>,
+    /// The rate shown at full color: a high percentile, so a few spikes don't wash out the rest
+    scale: f32,
+}
+
+// Gain rates are the gap's slope over this window, short enough to resolve a corner
+const GAIN_WINDOW_MS: i32 = 400;
+
+fn run_identity(session: &Session, run: usize) -> usize {
+    (std::sync::Arc::as_ptr(&session.files[session.runs[run].file].bytes) as usize) ^ session.runs[run].ghost
 }
 
 impl Default for TrajMapModule {
@@ -41,6 +61,8 @@ impl Default for TrajMapModule {
             show_checkpoints: true,
             markers_all_runs: false,
             placing_splits: false,
+            reference: None,
+            gains: None,
         }
     }
 }
@@ -78,7 +100,28 @@ impl Module for TrajMapModule {
             ui.checkbox(&mut self.placing_splits, "Place splits")
                 .on_hover_text("Click the focused line to split a sector there; right-click a split to remove it. The Run Report times every sector.");
         });
-        legend(ui, session, focus);
+        // The reference must be another visible run on the same map
+        let same_map = session.runs_on_map_of(focus);
+        if self.reference.is_some_and(|r| r == focus || !same_map.contains(&r)) {
+            self.reference = None;
+        }
+        ui.horizontal(|ui| {
+            ui.label("Color by");
+            let selected = self.reference.map_or("speed".to_owned(), |r| format!("time vs {}", session.runs[r].label));
+            egui::ComboBox::from_id_salt("trajmap-color").selected_text(selected).show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.reference, None, "speed");
+                for &r in same_map.iter().filter(|&&r| r != focus) {
+                    ui.selectable_value(&mut self.reference, Some(r), format!("time vs {}", session.runs[r].label));
+                }
+            });
+        });
+        match self.reference {
+            Some(r) => {
+                let scale = self.gains(session, focus, r).scale;
+                gain_legend(ui, session, r, scale);
+            }
+            None => legend(ui, session, focus),
+        }
 
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         let center = rect.center();
@@ -124,8 +167,12 @@ impl Module for TrajMapModule {
         }
         let focus_samples = &session.ghost(focus).samples;
         let (min_speed, max_speed) = focus_samples.iter().fold((f32::MAX, 0.0f32), |(lo, hi), s| (lo.min(s.speed_kmh), hi.max(s.speed_kmh)));
-        for pair in focus_samples.windows(2) {
-            let color = speed_color(pair[1].speed_kmh, min_speed, max_speed);
+        let gains = self.reference.and(self.gains.as_ref());
+        for (i, pair) in focus_samples.windows(2).enumerate() {
+            let color = match gains {
+                Some(g) => g.rates.get(i + 1).copied().flatten().map_or(Color32::from_gray(90), |r| gain_color(r, g.scale)),
+                None => speed_color(pair[1].speed_kmh, min_speed, max_speed),
+            };
             painter.line_segment([to_screen(xz(&pair[0])), to_screen(xz(&pair[1]))], Stroke::new(3.0, color));
         }
 
@@ -184,7 +231,21 @@ impl Module for TrajMapModule {
                     format!("\nsteer {:+.0}%, {gas}{brake}", steer * 100.0)
                 });
                 let action = if self.placing_splits { "click to split a sector here" } else { "click to seek" };
-                response.clone().on_hover_text_at_pointer(format!("{}  {:.0} km/h{inputs}\n{action}", format_race_time(tick as i64), speed));
+                // Against the reference: the gap here and how fast it is changing
+                let versus = gains.zip(self.reference).map_or(String::new(), |(g, r)| {
+                    let i = focus_samples.partition_point(|s| (s.time_ms as f32) <= t).saturating_sub(1);
+                    let gap = g.gaps.get(i).copied().flatten();
+                    let rate = g.rates.get(i).copied().flatten();
+                    match (gap, rate) {
+                        (Some(gap), Some(rate)) => {
+                            let side = if gap >= 0.0 { "ahead of" } else { "behind" };
+                            let trend = if rate >= 0.0 { "gaining" } else { "losing" };
+                            format!("\n{:.2} s {side} {}, {trend} {:.0} ms per s", gap.abs() / 1000.0, session.runs[r].label, rate.abs())
+                        }
+                        _ => format!("\nno gap to {} here", session.runs[r].label),
+                    }
+                });
+                response.clone().on_hover_text_at_pointer(format!("{}  {:.0} km/h{inputs}{versus}\n{action}", format_race_time(tick as i64), speed));
                 if response.clicked() {
                     if self.placing_splits {
                         place = position_at(focus_samples, t);
@@ -206,6 +267,21 @@ impl Module for TrajMapModule {
 }
 
 impl TrajMapModule {
+    /// The focused run's gaps and gain rates against the reference, computed once per pair of runs
+    fn gains(&mut self, session: &Session, focus: usize, reference: usize) -> &GainCache {
+        let key = (run_identity(session, focus), run_identity(session, reference));
+        if self.gains.as_ref().is_none_or(|g| g.key != key) {
+            let focus_samples = &session.ghost(focus).samples;
+            let gaps = tmreplay::gap::gaps_at_samples(focus_samples, &session.ghost(reference).samples);
+            let rates = tmreplay::gap::gain_rates(focus_samples, &gaps, GAIN_WINDOW_MS);
+            let mut magnitudes: Vec<f32> = rates.iter().flatten().map(|r| r.abs()).collect();
+            magnitudes.sort_by(f32::total_cmp);
+            let scale = magnitudes.get(magnitudes.len() * 95 / 100).copied().unwrap_or(0.0).max(20.0);
+            self.gains = Some(GainCache { key, gaps, rates, scale });
+        }
+        self.gains.as_ref().expect("filled above")
+    }
+
     fn fit_runs(&mut self, session: &Session, runs: &[usize], size: Vec2) {
         let mut min = [f32::MAX; 2];
         let mut max = [f32::MIN; 2];
@@ -279,6 +355,21 @@ impl TrajMapModule {
             }
         }
     }
+}
+
+fn gain_legend(ui: &mut egui::Ui, session: &Session, reference: usize, scale: f32) {
+    ui.horizontal(|ui| {
+        ui.label(format!("losing {scale:.0} ms/s"));
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(140.0, 10.0), Sense::hover());
+        for i in 0..28 {
+            let x0 = rect.left() + i as f32 * 5.0;
+            let color = gain_color(-scale + 2.0 * scale * i as f32 / 27.0, scale);
+            ui.painter().rect_filled(Rect::from_min_size(Pos2::new(x0, rect.top()), Vec2::new(5.0, 10.0)), 0.0, color);
+        }
+        ui.label(format!("gaining {scale:.0} ms/s against"));
+        color_swatch(ui, session.runs[reference].color);
+        ui.label(&session.runs[reference].label);
+    });
 }
 
 fn legend(ui: &mut egui::Ui, session: &Session, focus: usize) {

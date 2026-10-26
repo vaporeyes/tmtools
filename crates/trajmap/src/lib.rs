@@ -5,4 +5,4 @@ mod module;
 mod view;
 
 pub use module::TrajMapModule;
-pub use view::{nearest_on_path, speed_color, MapView};
+pub use view::{gain_color, nearest_on_path, speed_color, MapView};

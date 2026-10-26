@@ -11,8 +11,8 @@ any tab moves all of them:
 - **Telemetry Graphs** - speed, gap to the focused run, steering, pedals, RPM,
   and wheel contact, stacked on one linked time axis.
 - **Trajectory Map** - a top-down view of the block grid with racing lines
-  colored by speed and markers for braking, gas lifts, respawns, and
-  checkpoints.
+  colored by speed or by time gained and lost against another run, and
+  markers for braking, gas lifts, respawns, checkpoints, and sector splits.
 - **Run Report** - sector times for every run on a map, split at checkpoints
   and at points you place, with the best of each sector and the theoretical
   best.
@@ -128,6 +128,12 @@ Brake presses are filled red dots, releases red rings, gas lifts orange
 triangles, checkpoints blue diamonds with their times, and placed sector splits
 white squares labeled with the sector they start. Hover the line to
 read time, speed, and inputs; click it to seek there.
+
+**Color by** switches the focused line from speed to time against another run
+on the same map: green where the focused run gains, red where it loses, as
+the slope of the gap between them over 0.4 s (full color at the 95th
+percentile rate, shown in the legend). Gray stretches are where the lines are
+too far apart to compare. Hovering then also shows the gap and its trend.
 
 ## Run Report
 
