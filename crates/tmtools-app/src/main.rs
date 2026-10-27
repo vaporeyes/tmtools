@@ -140,9 +140,6 @@ fn runs_panel(ui: &mut egui::Ui, session: &mut Session) -> bool {
                     }
                 }
             }
-            if session.runs.len() > 1 && ui.button("Show all").clicked() {
-                session.runs.iter_mut().for_each(|r| r.visible = true);
-            }
         });
     });
     if let Some(status) = &session.status {
@@ -154,6 +151,18 @@ fn runs_panel(ui: &mut egui::Ui, session: &mut Session) -> bool {
         ui.add_space(20.0);
         ui.vertical_centered(|ui| ui.label(egui::RichText::new("Drop .Replay.Gbx files here\nor use Open or Library.").color(WEAK)));
         return library;
+    }
+
+    if session.runs.len() > 1 {
+        ui.horizontal(|ui| {
+            if ui.small_button("Select all").on_hover_text("Show every run").clicked() {
+                session.runs.iter_mut().for_each(|r| r.visible = true);
+            }
+            if ui.small_button("Select none").on_hover_text("Hide every run").clicked() {
+                session.runs.iter_mut().for_each(|r| r.visible = false);
+            }
+        });
+        ui.add_space(4.0);
     }
 
     let mut remove = None;
