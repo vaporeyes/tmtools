@@ -375,6 +375,7 @@ fn main() -> eframe::Result<()> {
                 Box::new(runreport::RunReportModule::default()),
                 Box::new(replayview::ReplayViewModule::default()),
                 Box::new(gbxinspect::GbxInspectModule::default()),
+                Box::new(mapedit::MapEditModule::default()),
             ];
             let mut app = TmtoolsApp { modules, active: 0, session: Session::default(), screenshot: screenshot::Screenshot::from_env(), library: library::LibraryWindow::default() };
             // The asset folder comes from the environment, else the one chosen last time; --assets overrides both

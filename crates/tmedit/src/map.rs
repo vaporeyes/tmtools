@@ -253,8 +253,7 @@ impl Map {
         for (_, s) in self.ids_after.strings.iter_mut().filter(|(_, s)| *s == old_uid) {
             *s = uid.to_owned();
         }
-        let flag = self.chunk.map_info[0].index & 0xC000_0000;
-        self.chunk.map_info[0] = RawId { index: flag, text: Some(uid.to_owned()) };
+        self.chunk.map_info[0] = RawId { index: string_flag(&self.chunk.map_info[0]), text: Some(uid.to_owned()) };
         self.chunk.map_name = name.to_owned();
 
         for header in &mut self.file.header_chunks {
@@ -270,12 +269,11 @@ impl Map {
     /// Makes `login` the map's author, so the game lets that player open it in the editor without paying coppers
     pub fn set_author(&mut self, login: &str) -> Result<()> {
         let old = self.author().to_owned();
-        let flag = self.chunk.map_info[2].index & 0xC000_0000;
         // The author's slot in the table now holds the new login; other strings never match a login
         if let Some((_, s)) = self.ids_after.strings.iter_mut().find(|(_, s)| *s == old) {
             *s = login.to_owned();
         }
-        self.chunk.map_info[2] = RawId { index: flag, text: Some(login.to_owned()) };
+        self.chunk.map_info[2] = RawId { index: string_flag(&self.chunk.map_info[2]), text: Some(login.to_owned()) };
         for header in &mut self.file.header_chunks {
             match header.id {
                 COMMON_HEADER => header.data = rewrite_common_header(&header.data, None, None, Some(login))?,
@@ -287,13 +285,21 @@ impl Map {
     }
 }
 
+/// The flag a string replacing this ID is stored with: the ID's own when it was a string, else the usual one
+fn string_flag(id: &RawId) -> u32 {
+    match id.index & 0xC000_0000 {
+        flag @ (0x4000_0000 | 0x8000_0000) if id.text.is_some() => flag,
+        _ => 0x4000_0000,
+    }
+}
+
 /// Header 0x03043003 starts with a version byte, the map ident (UID, collection, author), and the name; the rest is
 /// kept as stored. Fields given as None keep their stored values.
 fn rewrite_common_header(data: &[u8], uid: Option<&str>, name: Option<&str>, author: Option<&str>) -> Result<Vec<u8>> {
     let mut r = Reader::new(data);
     let version = r.u8()?;
     let keep = |id: RawId, text: Option<&str>| match text {
-        Some(text) => RawId { index: id.index & 0xC000_0000, text: Some(text.to_owned()) },
+        Some(text) => RawId { index: string_flag(&id), text: Some(text.to_owned()) },
         None => id,
     };
     let stored_uid = keep(r.id_raw()?, uid);

@@ -22,6 +22,8 @@ any tab moves all of them:
   overview cameras and an input HUD.
 - **Gbx Inspector** - the header, header chunks, body chunk tree, and a hex
   view of any Gbx file or a replay's embedded map.
+- **Map Editor** - a top-down, level-by-level block editor for a map file or
+  a replay's embedded map, saving a new map the game can load.
 
 ## Workspace layout
 
@@ -40,6 +42,7 @@ tmtools/
     replayview/     Replay Viewer module
     runreport/      Run Report module
     gbxinspect/     Gbx Inspector module
+    mapedit/        Map Editor module
     tmtools-app/    eframe shell: tabs, run list, playback bar
 ```
 
@@ -225,6 +228,29 @@ Grayed chunks were skipped without being read. Replays stop at the
 MediaTracker clip on purpose, and the walk notes where. Select any chunk to
 see its bytes in hex.
 
+## Map Editor
+
+Opens a `.Challenge.Gbx` map, a replay's embedded map, or the focused run's
+map, and shows one level of the block grid from above. Roads, start, finish,
+and checkpoint blocks have their own colors, arrows show which way each block
+faces, and the levels below are drawn faintly.
+
+- Click a block to select it. Arrows move it, Shift+Page Up/Down lifts it,
+  R turns it, and Delete removes it.
+- Pick a block in the palette (from the asset export) to place it: the
+  footprint shows green where it fits and red where it would leave the map
+  or overlap another block. R turns it, Esc goes back to selecting.
+- Page Up/Down and the toolbar change the level. Undo and redo are
+  Ctrl+Z and Ctrl+Shift+Z.
+- Save as writes the map under a new UID with the name and author login you
+  enter. Use your TMF login as the author, so the game lets you open the map
+  in its editor without paying coppers.
+
+Every chunk other than the blocks and the map's identity is written back as
+it was read. MediaTracker clips may refer to block names by position, so on
+maps that have clips, only block types the map already uses can be placed
+until you drop the clips.
+
 ## Testing
 
 `cargo test --workspace` covers the Gbx reader, LZO decoder, chunk loop,
@@ -269,6 +295,8 @@ loads.
 ## Known limitations
 
 - Only TMF-era binary Gbx files are read; TM2020 replays are not supported.
+- The Map Editor doesn't add the pillars or clip connections the game's own
+  editor adds, and doesn't update the map's checkpoint list or validation.
 - TMUnlimiter maps hide their real blocks, so their maps show only the runs.
 - Without an asset export, block cells are one grid square each and ground
   height comes from a small table of environment and map sizes.

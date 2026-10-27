@@ -1,0 +1,16 @@
+# ABOUTME: mapedit module: a top-down block editor for TMF maps. Opens a map file or a replay's embedded map, places,
+# ABOUTME: moves, rotates, and deletes blocks level by level, and saves a new map the game can load.
+[package]
+name = "mapedit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tmtools-core = { path = "../tmtools-core" }
+tmreplay = { path = "../tmreplay" }
+tmassets = { path = "../tmassets" }
+tmscene = { path = "../tmscene" }
+tmedit = { path = "../tmedit" }
+egui.workspace = true
+rfd.workspace = true

@@ -1669,6 +1669,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
+name = "mapedit"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "rfd",
+ "tmassets",
+ "tmedit",
+ "tmreplay",
+ "tmscene",
+ "tmtools-core",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3133,6 +3146,7 @@ dependencies = [
  "egui",
  "gbxinspect",
  "inputscope",
+ "mapedit",
  "png 0.17.16",
  "replayview",
  "rfd",

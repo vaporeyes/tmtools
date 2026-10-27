@@ -275,7 +275,7 @@ fn rotate_unit((x, y, z): Cell, dir: u8) -> Cell {
 }
 
 /// Grid cells covered by a block, with its rotated units shifted back to start at the block coordinate
-fn occupied_cells(b: &MapBlock, info: &BlockInfo) -> Vec<Cell> {
+pub fn occupied_cells(b: &MapBlock, info: &BlockInfo) -> Vec<Cell> {
     let units = units(b, info);
     if units.len() <= 1 {
         return vec![(b.x, b.y, b.z)];

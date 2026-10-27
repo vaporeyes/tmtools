@@ -19,6 +19,7 @@ trajmap = { path = "../trajmap" }
 gbxinspect = { path = "../gbxinspect" }
 replayview = { path = "../replayview" }
 runreport = { path = "../runreport" }
+mapedit = { path = "../mapedit" }
 egui.workspace = true
 eframe = { workspace = true, features = ["persistence"] }
 rfd.workspace = true
