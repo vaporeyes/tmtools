@@ -73,6 +73,8 @@ impl Module for RunReportModule {
             .show(ui, |ui| {
                 self.export_section(ui, session, focus);
                 ui.add_space(16.0);
+                runs_table(ui, session, focus);
+                ui.add_space(16.0);
                 let sector = sector_table(ui, session, focus);
                 ui.add_space(16.0);
                 let event = self.event_table(ui, session, focus);
@@ -195,6 +197,34 @@ fn save(session: &Session, focus: usize, kind: Export) -> String {
         Ok(()) => format!("Saved {}", path.display()),
         Err(e) => format!("Couldn't save {}: {e}", path.display()),
     }
+}
+
+/// Each visible run on the focused run's map: race time, distance driven, average and top speed
+fn runs_table(ui: &mut egui::Ui, session: &Session, focus: usize) {
+    use tmreplay::distance::{format_distance, total_distance};
+    ui.heading("Runs");
+    egui::Grid::new("runreport-runs").striped(true).num_columns(5).show(ui, |ui| {
+        for header in ["Run", "Race time", "Distance", "Average", "Top speed"] {
+            ui.strong(header);
+        }
+        ui.end_row();
+        for run in session.runs_on_map_of(focus) {
+            let ghost = session.ghost(run);
+            let distance = total_distance(&ghost.samples);
+            let seconds = ghost.duration_ms() as f32 / 1000.0;
+            let top = ghost.samples.iter().map(|s| s.speed_kmh).fold(0.0f32, f32::max);
+            ui.horizontal(|ui| {
+                color_swatch(ui, session.runs[run].color);
+                let label = RichText::new(&session.runs[run].label);
+                ui.label(if run == focus { label.strong() } else { label });
+            });
+            ui.label(ghost.race_time_ms.map_or("-".into(), |t| format_race_time(t as i64)));
+            ui.label(format_distance(distance)).on_hover_text("Along the car's path; respawn jumps are left out");
+            ui.label(if seconds > 0.0 { format!("{:.0} km/h", distance / seconds * 3.6) } else { "-".into() });
+            ui.label(format!("{top:.0} km/h"));
+            ui.end_row();
+        }
+    });
 }
 
 /// The sector table; returns a time to seek to when a cell is clicked

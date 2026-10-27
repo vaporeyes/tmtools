@@ -156,6 +156,12 @@ too far apart to compare. Hovering then also shows the gap and its trend.
 
 ## Run Report
 
+The **Runs** table lists each visible run on the focused run's map with its
+race time, distance driven, average speed, and top speed. Distance is the
+length of the car's path in meters (TrackMania's world unit), leaving out
+respawn jumps; the Replay Viewer's corner display shows the distance driven so
+far.
+
 The sector table covers the focused run and every visible run on the same
 map. Sectors end at each checkpoint and at each split placed with **Place
 splits** on the Trajectory Map (click the focused line to place one,

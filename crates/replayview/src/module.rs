@@ -404,13 +404,21 @@ fn draw_car(painter: &egui::Painter, pr: &Projector, position: Vec3, rotation: Q
 
 /// The focused run's time, speed, and inputs in the corner: arrow keys lit to the share held, as in a TAS display
 fn hud(painter: &egui::Painter, rect: Rect, session: &Session, focus: usize, now: f32) {
-    let panel = Rect::from_min_size(rect.left_bottom() + Vec2::new(12.0, -96.0), Vec2::new(250.0, 84.0));
+    let panel = Rect::from_min_size(rect.left_bottom() + Vec2::new(12.0, -112.0), Vec2::new(250.0, 100.0));
     painter.rect_filled(panel, 6.0, Color32::from_black_alpha(160));
     let speed = speed_at(&session.ghost(focus).samples, now).unwrap_or(0.0);
     let tick = tmreplay::track::tick_of(now as f64);
     let text = Color32::from_gray(230);
     painter.text(panel.left_top() + Vec2::new(10.0, 8.0), Align2::LEFT_TOP, format_race_time(tick as i64), FontId::monospace(16.0), text);
     painter.text(panel.left_top() + Vec2::new(10.0, 32.0), Align2::LEFT_TOP, format!("{speed:.0} km/h"), FontId::proportional(22.0), text);
+    let driven = tmreplay::distance::distance_at(&session.ghost(focus).samples, now);
+    painter.text(
+        panel.left_top() + Vec2::new(10.0, 64.0),
+        Align2::LEFT_TOP,
+        format!("{} driven", tmreplay::distance::format_distance(driven)),
+        FontId::proportional(14.0),
+        Color32::from_gray(190),
+    );
 
     let Some(track) = &session.runs[focus].track else { return };
     let key = |center: Pos2, amount: f32, lit: Color32, label: &str| {

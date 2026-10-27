@@ -1,6 +1,7 @@
 // ABOUTME: TrackMania Forever replays and maps as plain data, and the analysis built on them.
 // ABOUTME: Parsing is a port of gbx-tools-3d-node's server/replay; analysis follows its viewer's study tools.
 
+pub mod distance;
 pub mod export;
 pub mod gap;
 pub mod grid;
