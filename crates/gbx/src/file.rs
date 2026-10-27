@@ -1,8 +1,8 @@
-// ABOUTME: Gbx container reading: header, header chunks, reference table, LZO body, and the chunk loop.
+// ABOUTME: Gbx container reading and writing: header, header chunks, reference table, LZO body, and the chunk loop.
 // ABOUTME: Covers binary Gbx files as TMF writes them; follows GBX.NET's GbxHeaderReader, GbxRefTableReader, and CMwNod.Read.
 
 use crate::class_ids::{wrap_chunk_id, wrap_class_id};
-use crate::lzo::lzo1x_decompress;
+use crate::lzo::{lzo1x_decompress, lzo1x_store};
 use crate::reader::{ChunkSpan, NodeSlot, Reader};
 use crate::{format_err, Result};
 
@@ -13,6 +13,8 @@ const SKIP: u32 = 0x534B_4950; // "PIKS"
 pub struct HeaderChunk {
     /// Remapped chunk ID
     pub id: u32,
+    /// The ID as stored, written back unchanged
+    pub raw_id: u32,
     /// Heavy chunks are skipped by the game when it only lists files
     pub heavy: bool,
     pub data: Vec<u8>,
@@ -29,12 +31,16 @@ pub struct ExternalRef {
 #[derive(Debug, Clone)]
 pub struct GbxFile {
     pub version: u16,
+    /// The format bytes after the version: 'B', reference table and body compression, and (from version 4) one more
+    pub format: Vec<u8>,
     pub class_id: u32,
     /// Raw class ID as stored, before remapping
     pub raw_class_id: u32,
     pub header_chunks: Vec<HeaderChunk>,
     pub node_count: i32,
     pub external: Vec<ExternalRef>,
+    /// The reference table exactly as stored
+    pub ref_table: Vec<u8>,
     /// Compressed size when the body was LZO-compressed
     pub body_compressed_size: Option<usize>,
     /// Where the body starts in the file
@@ -52,6 +58,7 @@ impl GbxFile {
         if version < 3 {
             return format_err(format!("Gbx version {version} is not supported"));
         }
+        let format_start = r.pos;
         if r.u8()? != b'B' {
             return format_err("only binary Gbx files are supported");
         }
@@ -60,6 +67,7 @@ impl GbxFile {
         if version >= 4 {
             r.u8()?;
         }
+        let format = bytes[format_start..r.pos].to_vec();
 
         let raw_class_id = r.u32()?;
         let class_id = wrap_class_id(raw_class_id);
@@ -72,18 +80,20 @@ impl GbxFile {
                 let count = u.count()?;
                 let mut entries = Vec::with_capacity(count);
                 for _ in 0..count {
-                    let id = wrap_chunk_id(u.u32()?);
+                    let raw_id = u.u32()?;
                     let size = u.u32()?;
-                    entries.push((id, size & 0x7FFF_FFFF, size & 0x8000_0000 != 0));
+                    entries.push((raw_id, size & 0x7FFF_FFFF, size & 0x8000_0000 != 0));
                 }
-                for (id, size, heavy) in entries {
-                    header_chunks.push(HeaderChunk { id, heavy, data: u.read(size as usize)?.to_vec() });
+                for (raw_id, size, heavy) in entries {
+                    header_chunks.push(HeaderChunk { id: wrap_chunk_id(raw_id), raw_id, heavy, data: u.read(size as usize)?.to_vec() });
                 }
             }
         }
 
         let node_count = r.i32()?;
+        let ref_start = r.pos;
         let external = read_ref_table(&mut r, version)?;
+        let ref_table = bytes[ref_start..r.pos].to_vec();
 
         let (body, body_compressed_size, body_offset) = if body_compressed {
             let uncompressed = r.u32()? as usize;
@@ -95,7 +105,46 @@ impl GbxFile {
             (r.read(r.remaining())?.to_vec(), None, offset)
         };
 
-        Ok(Self { version, class_id, raw_class_id, header_chunks, node_count, external, body_compressed_size, body_offset, body })
+        Ok(Self { version, format, class_id, raw_class_id, header_chunks, node_count, external, ref_table, body_compressed_size, body_offset, body })
+    }
+
+    /// The file with this body, everything else as read: the header chunks as they are now, and the body LZO-wrapped
+    /// (stored, not compressed) when `compress` is set, else uncompressed
+    pub fn write(&self, body: &[u8], compress: bool) -> Vec<u8> {
+        let mut w = crate::Writer::new();
+        w.raw(b"GBX");
+        w.u16(self.version);
+        let mut format = self.format.clone();
+        if let Some(byte) = format.get_mut(2) {
+            *byte = if compress { b'C' } else { b'U' };
+        }
+        w.raw(&format);
+        w.u32(self.raw_class_id);
+        if self.version >= 6 {
+            let mut user = crate::Writer::new();
+            if !self.header_chunks.is_empty() {
+                user.i32(self.header_chunks.len() as i32);
+                for c in &self.header_chunks {
+                    user.u32(c.raw_id);
+                    user.u32(c.data.len() as u32 | if c.heavy { 0x8000_0000 } else { 0 });
+                }
+                for c in &self.header_chunks {
+                    user.raw(&c.data);
+                }
+            }
+            w.data(&user.bytes);
+        }
+        w.i32(self.node_count);
+        w.raw(&self.ref_table);
+        if compress {
+            let stored = lzo1x_store(body);
+            w.u32(body.len() as u32);
+            w.u32(stored.len() as u32);
+            w.raw(&stored);
+        } else {
+            w.raw(body);
+        }
+        w.bytes
     }
 
     /// A reader over the body, positioned at the main node's first chunk, that knows which nodes are external
@@ -262,6 +311,10 @@ mod tests {
         file.extend(le(&[FACADE]));
 
         let gbx = GbxFile::parse(&file).unwrap();
+        // Written back as read, it is the same file; compressed, it reads back the same
+        assert_eq!(gbx.write(&gbx.body, false), file);
+        let compressed = GbxFile::parse(&gbx.write(&gbx.body, true)).unwrap();
+        assert_eq!((compressed.body.clone(), compressed.body_compressed_size.is_some()), (gbx.body.clone(), true));
         assert_eq!(gbx.class_id, 0x0309_3000);
         assert_eq!(gbx.header_chunks.len(), 1);
         assert_eq!(gbx.header_reader(0x0309_3000).unwrap().u32().unwrap(), 7);

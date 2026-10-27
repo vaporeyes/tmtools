@@ -7,6 +7,7 @@ members = [
     "crates/tmreplay",
     "crates/tmassets",
     "crates/tmscene",
+    "crates/tmedit",
     "crates/tmtools-core",
     "crates/inputscope",
     "crates/telemetry",

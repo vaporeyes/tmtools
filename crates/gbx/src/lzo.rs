@@ -1,5 +1,5 @@
-// ABOUTME: LZO1X decompression (the "safe" decoder), which TMF uses for Gbx file bodies.
-// ABOUTME: Follows lzo1x_decompress_safe from minilzo; the output size is known from the Gbx header.
+// ABOUTME: LZO1X decompression (the "safe" decoder), which TMF uses for Gbx file bodies, and a stored encoder that
+// ABOUTME: wraps data as one literal run any LZO1X decoder reads back. Decoding follows lzo1x_decompress_safe from minilzo.
 
 use crate::{format_err, Result};
 
@@ -153,9 +153,44 @@ pub fn lzo1x_decompress(src: &[u8], out_len: usize) -> Result<Vec<u8>> {
     }
 }
 
+/// Data as a valid LZO1X stream without compressing it: one literal run, then the end-of-stream marker. Decoders
+/// read a run of up to 18 bytes from its first byte, and longer runs from a zero byte, zero bytes worth 255 more each,
+/// and a final count.
+pub fn lzo1x_store(data: &[u8]) -> Vec<u8> {
+    let n = data.len();
+    let mut out = Vec::with_capacity(n + n / 255 + 8);
+    match n {
+        0 => {}
+        // The first byte says how many literals follow, up to 238 with the "first byte above 17" form
+        1..=238 => out.push((n + 17) as u8),
+        _ => {
+            // Literal count t + 3, with t = 15 + 255 * zeros + final byte (1 to 255)
+            let mut rest = n - 3 - 15;
+            out.push(0);
+            while rest > 255 {
+                out.push(0);
+                rest -= 255;
+            }
+            out.push(rest as u8);
+        }
+    }
+    out.extend_from_slice(data);
+    // End of stream: a match instruction with distance zero
+    out.extend_from_slice(&[0x11, 0, 0]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_streams_decode_to_the_input_at_every_length() {
+        for n in [1usize, 3, 17, 18, 19, 237, 238, 239, 240, 255, 273, 274, 275, 528, 529, 530, 70_000] {
+            let data: Vec<u8> = (0..n).map(|i| (i * 7 % 251) as u8).collect();
+            assert_eq!(lzo1x_decompress(&lzo1x_store(&data), n).unwrap(), data, "length {n}");
+        }
+    }
 
     // A first byte above 17 starts with that many literals (minus 17); 0x11 0x00 0x00 ends the stream
     #[test]

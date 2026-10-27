@@ -1,0 +1,11 @@
+# ABOUTME: tmedit crate: edits TMF map files (CGameCtnChallenge) in place: the block list, the map's UID and name, and
+# ABOUTME: writing the file back with every chunk it doesn't change kept byte for byte. No UI.
+[package]
+name = "tmedit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gbx = { path = "../gbx" }
+tmreplay = { path = "../tmreplay" }

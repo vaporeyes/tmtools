@@ -32,6 +32,7 @@ tmtools/
     tmreplay/       replay and map parsing, input tracks, gaps, block grid
     tmassets/       asset export reading: meshes, textures, materials, data
     tmscene/        block placement, moods, and drawable map and car parts
+    tmedit/         map editing: block chunk, UID and name, writing files back
     tmtools-core/   Module trait and the shared Session (runs, focus, clock)
     inputscope/     Input Analyzer module
     telemetry/      Telemetry Graphs module
@@ -246,6 +247,12 @@ service when `TMTOOLS_SERVICE_URL` is set (such as `http://localhost:5080`).
 TypeScript parser's output for a folder of real replays. Set
 `TMTOOLS_REPLAY_DIR` to that folder to run it; without it the test is
 skipped.
+
+`crates/tmedit/tests/library.rs` writes the maps embedded in that folder's
+replays back unchanged and checks they match byte for byte, then edits them
+and reads the edits back. `cargo run -p tmedit --example test_batch -- <map
+or replay> <out dir>` writes four copies of a map (unchanged, uncompressed,
+one block removed, one block moved) for checking in the game.
 
 ## Screenshots from scripts
 

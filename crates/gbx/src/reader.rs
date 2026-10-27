@@ -46,6 +46,22 @@ pub struct ChunkSpan {
     pub read: bool,
 }
 
+/// An ID as stored: the raw index, and its text when it is a string (new or a reference to an earlier one). Numbers
+/// (collection IDs) and the empty ID have no text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawId {
+    pub index: u32,
+    pub text: Option<String>,
+}
+
+/// The lookback string table at a point in the data: whether its version was read, and each string with its flag in
+/// the order they were introduced
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IdState {
+    pub version: Option<i32>,
+    pub strings: Vec<(u32, String)>,
+}
+
 pub(crate) enum NodeSlot {
     /// Lives in another file; references to it read as null
     External,
@@ -219,6 +235,25 @@ impl<'a> Reader<'a> {
         let slot = index.wrapping_add(self.ids.len() as u32 + 1);
         self.ids.insert(slot, value.clone());
         Ok(value)
+    }
+
+    /// The lookback string table as it stands, for a writer that continues from here
+    pub fn id_state(&self) -> IdState {
+        let mut slots: Vec<(u32, u32, String)> = self.ids.iter().map(|(&key, s)| (key & 0x3FFF_FFFF, key & 0xC000_0000, s.clone())).collect();
+        slots.sort_by_key(|s| s.0);
+        IdState { version: self.id_version, strings: slots.into_iter().map(|(_, flag, s)| (flag, s)).collect() }
+    }
+
+    /// An ID exactly as stored, keeping whether it was a number or a string
+    pub fn id_raw(&mut self) -> Result<RawId> {
+        let index = self.id_index()?;
+        if index == u32::MAX {
+            return Ok(RawId { index, text: None });
+        }
+        match index & 0xC000_0000 {
+            0x4000_0000 | 0x8000_0000 => Ok(RawId { index, text: Some(self.id_string(index)?) }),
+            _ => Ok(RawId { index, text: None }),
+        }
     }
 
     /// An ID read as text: numbers stay numbers

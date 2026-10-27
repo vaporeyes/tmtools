@@ -199,6 +199,39 @@ pub fn parse_challenge(bytes: &[u8]) -> Result<Challenge> {
     read_challenge_body(&mut file.body_reader())?.map_or_else(|| format_err("the map has no block data"), Ok)
 }
 
+/// A reader over a map's body positioned at the data of its block chunk (0x0304301F), carrying the lookback strings
+/// and nodes of the chunks before it, and the offset where that chunk's ID starts
+pub fn reader_at_block_chunk(file: &GbxFile) -> Result<(Reader<'_>, usize)> {
+    if file.class_id != CHALLENGE {
+        return format_err("not a map");
+    }
+    let mut r = file.body_reader();
+    let mut start = None;
+    read_chunks(&mut r, |id, r| {
+        match id {
+            0x0304_300D => {
+                r.ident()?;
+            }
+            0x0304_3011 => {
+                r.node_ref(read_challenge_parameters)?;
+                r.node_ref(read_challenge_parameters)?;
+                r.i32()?;
+            }
+            // The block chunk can't be skipped, so its data starts right after its ID
+            0x0304_301F => {
+                start = Some(r.pos - 4);
+                return Ok(Some(Flow::Stop));
+            }
+            _ => return Ok(None),
+        }
+        Ok(Some(Flow::Continue))
+    })?;
+    match start {
+        Some(start) => Ok((r, start)),
+        None => format_err("the map has no block data"),
+    }
+}
+
 fn read_challenge_body(r: &mut Reader) -> Result<Option<Challenge>> {
     let mut challenge = None;
     read_chunks(r, |id, r| {
@@ -310,7 +343,8 @@ fn read_block(r: &mut Reader, version: i32) -> Result<MapBlock> {
     })
 }
 
-fn read_block_skin(class_id: u32, r: &mut Reader) -> Result<()> {
+/// A block skin node (custom textures on signs): read only to step over it
+pub fn read_block_skin(class_id: u32, r: &mut Reader) -> Result<()> {
     if class_id != BLOCK_SKIN {
         return format_err(format!("block skin of class 0x{class_id:08X} can't be read"));
     }

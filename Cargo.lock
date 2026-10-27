@@ -3100,6 +3100,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tmedit"
+version = "0.1.0"
+dependencies = [
+ "gbx",
+ "tmreplay",
+]
+
+[[package]]
 name = "tmreplay"
 version = "0.1.0"
 dependencies = [

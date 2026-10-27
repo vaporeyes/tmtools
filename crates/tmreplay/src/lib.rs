@@ -16,7 +16,7 @@ pub mod track;
 pub use gbx::{Quat, Vec3};
 pub use inputs::{gas_value, parse_input, steer_value};
 pub use model::*;
-pub use replay::{parse_challenge, parse_replay, trace_body, BodyTrace, Challenge};
+pub use replay::{parse_challenge, parse_replay, read_block_skin, reader_at_block_chunk, trace_body, BodyTrace, Challenge};
 
 /// A race time as "m:ss.hh" (hours added when needed), truncated to hundredths as the game shows it
 pub fn format_race_time(ms: i64) -> String {
