@@ -67,3 +67,36 @@ fn edits_read_back() {
         assert!(header > 0);
     }
 }
+
+#[test]
+fn new_block_types_and_authors_read_back() {
+    let Some(maps) = library_maps() else {
+        eprintln!("TMTOOLS_REPLAY_DIR is not set; skipping");
+        return;
+    };
+    for (name, bytes) in &maps {
+        let mut map = Map::parse(bytes).unwrap();
+        assert!(map.tail.understood, "{name}: {:?}", map.tail);
+        let had_clips = !map.tail.clip_spans.is_empty();
+        let collection = parse_challenge(bytes).unwrap().collection;
+        // A block name no map uses, so the string table gains a slot
+        let index = map.chunk.add(&format!("{collection}TmtoolsProbe"), [0, 9, 0], 1, false).unwrap();
+        map.set_author("tmtools_tester").unwrap();
+        if had_clips {
+            assert!(map.to_bytes(true).is_err(), "{name}: clips should block a table change");
+            map.drop_clips();
+            assert!(map.tail.ids_free(), "{name}: {:?}", map.tail);
+        }
+        let out = map.to_bytes(true).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let after = parse_challenge(&out).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let probe = &after.blocks[index];
+        assert_eq!((probe.name.as_str(), probe.x, probe.y, probe.z, probe.dir), (format!("{collection}TmtoolsProbe").as_str(), 0, 9, 0, 1), "{name}");
+        assert_eq!(after.author, "tmtools_tester", "{name}");
+        let reopened = Map::parse(&out).unwrap();
+        assert!(reopened.tail.ids_free(), "{name}");
+        let header = reopened.file.header_reader(0x0304_3003).unwrap();
+        let mut header = header;
+        header.u8().unwrap();
+        assert_eq!(header.ident().unwrap().author, "tmtools_tester", "{name}");
+    }
+}

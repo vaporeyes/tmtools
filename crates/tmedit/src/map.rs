@@ -4,12 +4,18 @@
 use gbx::{format_err, GbxFile, IdState, RawId, Reader, Result, Writer};
 use tmreplay::{read_block_skin, reader_at_block_chunk};
 
+use crate::tail::{drop_clips, read_tail, Tail};
+
 const COMMON_HEADER: u32 = 0x0304_3003;
 const XML_HEADER: u32 = 0x0304_3005;
 const FACADE: u32 = 0xFACA_DE01;
 const SKIP: u32 = 0x534B_4950; // "PIKS"
 /// Flags bit 15: the block has an author and a skin node (custom sign textures)
 const HAS_SKIN: u32 = 1 << 15;
+/// Flags bit 12: the block stands on the ground and uses its ground variant
+const GROUND: u32 = 1 << 12;
+/// Flags bit 13: a clip marker, where the game connects neighbouring blocks
+const CLIP: u32 = 1 << 13;
 
 /// A block's custom skin: the author ID and the skin node's bytes, kept as read
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +33,16 @@ pub struct Block {
     pub stored: [u8; 3],
     pub flags: u32,
     pub skin: Option<Skin>,
+}
+
+impl Block {
+    pub fn is_ground(&self) -> bool {
+        self.flags & GROUND != 0
+    }
+
+    pub fn is_clip(&self) -> bool {
+        self.flags & CLIP != 0
+    }
 }
 
 /// The block chunk's fields in the order they are stored
@@ -65,6 +81,29 @@ impl BlockChunk {
         let shift = self.shift();
         self.blocks[index].stored = [(cell[0] + shift) as u8, cell[1] as u8, (cell[2] + shift) as u8];
         Ok(())
+    }
+
+    /// Adds a block (base variant, no skin) at a grid cell and returns its index
+    pub fn add(&mut self, name: &str, cell: [i32; 3], dir: u8, is_ground: bool) -> Result<usize> {
+        self.blocks.push(Block { name: name.to_owned(), dir: dir % 4, stored: [0; 3], flags: if is_ground { GROUND } else { 0 }, skin: None });
+        let index = self.blocks.len() - 1;
+        if let Err(e) = self.set_cell(index, cell) {
+            self.blocks.pop();
+            return Err(e);
+        }
+        Ok(index)
+    }
+
+    /// Turns a block a quarter turn clockwise
+    pub fn rotate(&mut self, index: usize) {
+        let b = &mut self.blocks[index];
+        b.dir = (b.dir + 1) % 4;
+    }
+
+    /// Marks a block as standing on the ground or not; its variant is reset to the base one
+    pub fn set_ground(&mut self, index: usize, is_ground: bool) {
+        let b = &mut self.blocks[index];
+        b.flags = (b.flags & !(GROUND | 0xFFF)) | if is_ground { GROUND } else { 0 };
     }
 
     fn write(&self, w: &mut Writer) {
@@ -136,6 +175,8 @@ pub struct Map {
     /// The lookback string table at the chunk's start and end, as the original file has it
     ids_before: IdState,
     ids_after: IdState,
+    /// What follows the block chunk
+    pub tail: Tail,
 }
 
 impl Map {
@@ -155,22 +196,38 @@ impl Map {
             }
             (chunk, start, r.pos, ids_before, r.id_state())
         };
-        Ok(Self { file, chunk, start, end, ids_before, ids_after })
+        let tail = read_tail(&file.body, end, ids_after.strings.len());
+        Ok(Self { file, chunk, start, end, ids_before, ids_after, tail })
     }
 
     pub fn uid(&self) -> &str {
         self.chunk.map_info[0].text.as_deref().unwrap_or("")
     }
 
-    /// The block chunk's data, encoded after the chunks before it. Later chunks refer to strings by their slot in
-    /// the table, so an edit that changes the table they see is refused.
+    pub fn author(&self) -> &str {
+        self.chunk.map_info[2].text.as_deref().unwrap_or("")
+    }
+
+    /// The block chunk's data, encoded after the chunks before it. Later chunks may refer to strings by their slot in
+    /// the table, so an edit that changes the table is refused unless nothing after the chunk can do that.
     pub fn encode_chunk(&self) -> Result<Vec<u8>> {
         let mut w = Writer::with_id_state(&self.ids_before);
         self.chunk.write(&mut w);
-        if w.id_state() != self.ids_after {
-            return format_err("the edit changes which strings later chunks refer to (a block name was dropped or reordered)");
+        if w.id_state() != self.ids_after && !self.tail.ids_free() {
+            return format_err(if self.tail.clip_spans.is_empty() {
+                "this map has chunks after its blocks that tmtools can't read, so block types can't be added or used up"
+            } else {
+                "this map's MediaTracker clips may refer to block names; drop the clips to add or use up block types"
+            });
         }
         Ok(w.bytes)
+    }
+
+    /// Removes the MediaTracker clips (intro, in-game, end-race, and global), which frees the block chunk to change
+    /// the string table
+    pub fn drop_clips(&mut self) {
+        self.file.body = drop_clips(&self.file.body, &self.tail);
+        self.tail = read_tail(&self.file.body, self.end, self.ids_after.strings.len());
     }
 
     /// The body with the block chunk re-encoded and everything else as read
@@ -202,8 +259,27 @@ impl Map {
 
         for header in &mut self.file.header_chunks {
             match header.id {
-                COMMON_HEADER => header.data = rewrite_common_header(&header.data, uid, name)?,
-                XML_HEADER => header.data = rewrite_xml_header(&header.data, uid, name)?,
+                COMMON_HEADER => header.data = rewrite_common_header(&header.data, Some(uid), Some(name), None)?,
+                XML_HEADER => header.data = rewrite_xml_header(&header.data, &[("uid", uid), ("name", name)])?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Makes `login` the map's author, so the game lets that player open it in the editor without paying coppers
+    pub fn set_author(&mut self, login: &str) -> Result<()> {
+        let old = self.author().to_owned();
+        let flag = self.chunk.map_info[2].index & 0xC000_0000;
+        // The author's slot in the table now holds the new login; other strings never match a login
+        if let Some((_, s)) = self.ids_after.strings.iter_mut().find(|(_, s)| *s == old) {
+            *s = login.to_owned();
+        }
+        self.chunk.map_info[2] = RawId { index: flag, text: Some(login.to_owned()) };
+        for header in &mut self.file.header_chunks {
+            match header.id {
+                COMMON_HEADER => header.data = rewrite_common_header(&header.data, None, None, Some(login))?,
+                XML_HEADER => header.data = rewrite_xml_header(&header.data, &[("author", login)])?,
                 _ => {}
             }
         }
@@ -211,35 +287,41 @@ impl Map {
     }
 }
 
-/// Header 0x03043003 starts with a version byte, the map ident, and the name; the rest is kept as stored
-fn rewrite_common_header(data: &[u8], uid: &str, name: &str) -> Result<Vec<u8>> {
+/// Header 0x03043003 starts with a version byte, the map ident (UID, collection, author), and the name; the rest is
+/// kept as stored. Fields given as None keep their stored values.
+fn rewrite_common_header(data: &[u8], uid: Option<&str>, name: Option<&str>, author: Option<&str>) -> Result<Vec<u8>> {
     let mut r = Reader::new(data);
     let version = r.u8()?;
-    let flag = r.id_raw()?.index & 0xC000_0000;
-    let (collection, author) = (r.id_raw()?, r.id_raw()?);
-    r.string()?;
+    let keep = |id: RawId, text: Option<&str>| match text {
+        Some(text) => RawId { index: id.index & 0xC000_0000, text: Some(text.to_owned()) },
+        None => id,
+    };
+    let stored_uid = keep(r.id_raw()?, uid);
+    let collection = r.id_raw()?;
+    let stored_author = keep(r.id_raw()?, author);
+    let stored_name = r.string()?;
     let mut w = Writer::new();
     w.u8(version);
-    w.id_raw(&RawId { index: flag, text: Some(uid.to_owned()) });
+    w.id_raw(&stored_uid);
     w.id_raw(&collection);
-    w.id_raw(&author);
-    w.string(name);
+    w.id_raw(&stored_author);
+    w.string(name.unwrap_or(&stored_name));
     w.raw(&data[r.pos..]);
     Ok(w.bytes)
 }
 
-/// Header 0x03043005 is one XML string; its ident element carries the UID and name
-fn rewrite_xml_header(data: &[u8], uid: &str, name: &str) -> Result<Vec<u8>> {
+/// Header 0x03043005 is one XML string; its ident element carries the UID, name, and author
+fn rewrite_xml_header(data: &[u8], attrs: &[(&str, &str)]) -> Result<Vec<u8>> {
     let xml = Reader::new(data).string()?;
     let Some(ident_at) = xml.find("<ident ") else { return format_err("the XML header has no ident element") };
     let ident_end = ident_at + xml[ident_at..].find('>').unwrap_or(xml.len() - ident_at);
     let mut ident = xml[ident_at..ident_end].to_owned();
-    for (attr, value) in [("uid", uid.to_owned()), ("name", xml_escape(name))] {
+    for &(attr, value) in attrs {
         let key = format!(" {attr}=\"");
         let Some(at) = ident.find(&key) else { return format_err(format!("the XML ident has no {attr}")) };
         let value_at = at + key.len();
         let value_end = value_at + ident[value_at..].find('"').unwrap_or(0);
-        ident.replace_range(value_at..value_end, &value);
+        ident.replace_range(value_at..value_end, &xml_escape(value));
     }
     let mut w = Writer::new();
     w.string(&format!("{}{ident}{}", &xml[..ident_at], &xml[ident_end..]));
@@ -274,7 +356,7 @@ mod tests {
     fn rewrites_the_xml_ident() {
         let mut w = Writer::new();
         w.string(r#"<header type="challenge"><ident uid="old" name="Old" author="me"/><desc envir="Stadium"/></header>"#);
-        let out = rewrite_xml_header(&w.bytes, "fresh", "A & B").unwrap();
+        let out = rewrite_xml_header(&w.bytes, &[("uid", "fresh"), ("name", "A & B")]).unwrap();
         assert_eq!(
             Reader::new(&out).string().unwrap(),
             r#"<header type="challenge"><ident uid="fresh" name="A &amp; B" author="me"/><desc envir="Stadium"/></header>"#
@@ -290,10 +372,11 @@ mod tests {
         w.id_text("me");
         w.string("Old");
         w.raw(&[1, 2, 3]);
-        let out = rewrite_common_header(&w.bytes, "fresh", "New").unwrap();
+        let out = rewrite_common_header(&w.bytes, Some("fresh"), Some("New"), None).unwrap();
         let mut r = Reader::new(&out);
         assert_eq!(r.u8().unwrap(), 5);
-        assert_eq!(r.ident().unwrap().id, "fresh");
+        let ident = r.ident().unwrap();
+        assert_eq!((ident.id.as_str(), ident.author.as_str()), ("fresh", "me"));
         assert_eq!(r.string().unwrap(), "New");
         assert_eq!(r.read(3).unwrap(), [1, 2, 3]);
     }
