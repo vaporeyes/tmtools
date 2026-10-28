@@ -1,6 +1,8 @@
 // ABOUTME: Walks the map chunks that follow the block chunk (MediaTracker clips, music, comments, password) to learn
 // ABOUTME: whether anything there can refer to the lookback string table, and drops MediaTracker clips on request.
 
+use gbx::class_ids::wrap_chunk_id;
+
 const FACADE: u32 = 0xFACA_DE01;
 const SKIP: u32 = 0x534B_4950; // "PIKS"
 const NULL_REF: [u8; 4] = [0xFF; 4];
@@ -27,11 +29,11 @@ fn word(body: &[u8], at: usize) -> Option<u32> {
     body.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()))
 }
 
-/// The first offset at or after `from` where `chunk` starts, for stepping over clip nodes this crate doesn't read.
-/// A wrong match leaves the rest of the walk unreadable, which `understood` reports.
+/// The first offset at or after `from` where `chunk` starts, stored under its current or an older class ID, for
+/// stepping over clip nodes this crate doesn't read. A wrong match leaves the rest of the walk unreadable, which
+/// `understood` reports.
 fn find_chunk(body: &[u8], from: usize, chunk: u32) -> Option<usize> {
-    let needle = chunk.to_le_bytes();
-    body.get(from..)?.windows(4).position(|w| w == needle).map(|i| from + i)
+    body.get(from..)?.windows(4).position(|w| wrap_chunk_id(u32::from_le_bytes(w.try_into().unwrap())) == chunk).map(|i| from + i)
 }
 
 /// A length-prefixed string's end
@@ -54,8 +56,8 @@ pub fn read_tail(body: &[u8], from: usize, slots: usize) -> Tail {
     let mut tail = Tail::default();
     let mut at = from;
     loop {
-        let Some(id) = word(body, at) else { return tail };
-        if id == FACADE {
+        let Some(raw) = word(body, at) else { return tail };
+        if raw == FACADE {
             tail.understood = at + 4 == body.len();
             return tail;
         }
@@ -63,14 +65,15 @@ pub fn read_tail(body: &[u8], from: usize, slots: usize) -> Tail {
             let Some(size) = word(body, at + 8) else { return tail };
             let Some(data) = body.get(at + 12..at + 12 + size as usize) else { return tail };
             // The password chunk holds a hash and a checksum
-            if id != 0x0304_3029 && may_refer_to_strings(data, slots) {
+            if wrap_chunk_id(raw) != 0x0304_3029 && may_refer_to_strings(data, slots) {
                 tail.unknown_skippable += 1;
             }
             at += 12 + size as usize;
             continue;
         }
         let data = at + 4;
-        let next = match id {
+        // Older games store map chunks under an older class ID
+        let next = match wrap_chunk_id(raw) {
             // Intro, in-game, and end-race clips
             0x0304_3021 => {
                 if body.get(data..data + 12) == Some(&[0xFF; 12][..]) {
@@ -121,7 +124,7 @@ pub fn drop_clips(body: &[u8], tail: &Tail) -> Vec<u8> {
     for &(start, end) in &tail.clip_spans {
         out.extend_from_slice(&body[at..start]);
         // 0x03043021 has three clip references, 0x03043026 one
-        let refs = if body[start - 4..start] == 0x0304_3021u32.to_le_bytes() { 3 } else { 1 };
+        let refs = if word(body, start - 4).map(wrap_chunk_id) == Some(0x0304_3021) { 3 } else { 1 };
         (0..refs).for_each(|_| out.extend_from_slice(&NULL_REF));
         at = end;
     }
@@ -157,6 +160,17 @@ mod tests {
         let after = read_tail(&dropped, 0, 8);
         assert!(after.ids_free(), "{after:?}");
         assert_eq!(dropped.len(), body.len());
+    }
+
+    #[test]
+    fn older_class_ids_are_recognized() {
+        // Nations ESWC stores map chunks under class 0x24003000
+        let body = le(&[0x2400_3021, u32::MAX, u32::MAX, u32::MAX, 0x2400_3022, 1, 0x2400_3026, u32::MAX, FACADE]);
+        assert!(read_tail(&body, 0, 8).ids_free());
+        let clips = le(&[0x2400_3021, 5, 0x0307_9000, 77, 0x2400_3022, 1, FACADE]);
+        let tail = read_tail(&clips, 0, 8);
+        assert_eq!(tail.clip_spans, vec![(4, 16)]);
+        assert!(read_tail(&drop_clips(&clips, &tail), 0, 8).ids_free());
     }
 
     #[test]

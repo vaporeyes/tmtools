@@ -294,7 +294,10 @@ loads.
 
 ## Known limitations
 
-- Only TMF-era binary Gbx files are read; TM2020 replays are not supported.
+- Only binary Gbx files from TrackMania Forever and earlier are read; TM2020
+  replays are not supported. Older replays (Nations ESWC) are read from
+  their own ghost and input chunks; one that has a MediaTracker clip opens
+  without inputs, as the clip comes before them and can't be stepped over.
 - The Map Editor doesn't add the pillars or clip connections the game's own
   editor adds, and doesn't update the map's checkpoint list or validation.
 - TMUnlimiter maps hide their real blocks, so their maps show only the runs.

@@ -3,7 +3,7 @@
 
 use crate::inputs::parse_input;
 use crate::model::{Checkpoint, Ghost, Input, MapBlock, Replay, ReplayMap};
-use crate::samples::read_sample_data;
+use crate::samples::{read_old_sample_data, read_sample_data};
 use gbx::{format_err, read_chunks, ChunkSpan, Flow, GbxFile, Ident, Reader, Result};
 
 const REPLAY_RECORD: u32 = 0x0309_3000;
@@ -57,6 +57,20 @@ fn read_replay_body(r: &mut Reader) -> Result<ReplayBody> {
             0x0309_3007 => {
                 r.i32()?;
             }
+            // TM Nations ESWC and earlier: a version, the ghosts, then a duration and record units
+            0x0309_3004 => {
+                r.i32()?;
+                r.deprec_version_prefix()?;
+                let count = r.count()?;
+                for _ in 0..count {
+                    if let Some(ghost) = r.node_ref(read_ghost)? {
+                        body.ghosts.push((*ghost).clone());
+                    }
+                }
+                r.i32()?;
+                let extras = r.count()?;
+                r.skip(extras * 8)?;
+            }
             0x0309_3014 => {
                 r.deprec_version_prefix()?;
                 let count = r.count()?;
@@ -71,6 +85,21 @@ fn read_replay_body(r: &mut Reader) -> Result<ReplayBody> {
             }
             // The MediaTracker clip follows; nothing after it is needed
             0x0309_3015 => return Ok(Some(Flow::Stop)),
+            // Older games put the clip before the inputs; a clip node can't be stepped over, so a replay with one
+            // ends here without inputs
+            0x0309_300C => {
+                if r.i32()? != -1 {
+                    return Ok(Some(Flow::Stop));
+                }
+            }
+            // Sunrise and Nations ESWC: the first ghost's inputs, laid out as in TMF's validation chunk
+            0x0309_300D => {
+                let inputs = read_inputs(r)?.unwrap_or_default();
+                if let Some(ghost) = body.ghosts.first_mut() {
+                    ghost.inputs = inputs;
+                }
+                return Ok(Some(Flow::Stop));
+            }
             _ => return Ok(None),
         }
         Ok(Some(Flow::Continue))
@@ -92,7 +121,33 @@ fn read_ghost(class_id: u32, r: &mut Reader) -> Result<Ghost> {
                 ghost.sample_period_ms = Some(data.sample_period_ms);
                 ghost.samples = data.samples;
             }
+            // TM Nations ESWC and earlier: uncompressed sample data, then the class of the recorded vehicle
+            0x0303_F003 => {
+                let data = read_old_sample_data(c)?;
+                ghost.sample_period_ms = Some(data.sample_period_ms);
+                ghost.samples = data.samples;
+            }
+            0x0303_F004 => {
+                c.u32()?;
+            }
             0x0309_2005 => ghost.race_time_ms = c.time_nullable()?,
+            // Vehicle, skin, and nickname as older games store them: TM 1.0 and PU (0x003), Sunrise and Nations
+            // ESWC (0x006, one int more), United (0x00D, four ints more)
+            0x0309_2003 | 0x0309_2006 | 0x0309_200D => {
+                ghost.vehicle = Some(c.ident()?.id);
+                c.string()?; // skin
+                let ints = match id {
+                    0x0309_2006 => 1,
+                    0x0309_200D => 4,
+                    _ => 0,
+                };
+                c.skip(ints * 4)?;
+                ghost.nickname = Some(c.string()?);
+            }
+            // Old light trail color
+            0x0309_2007 => {
+                c.vec3()?;
+            }
             0x0309_2008 | 0x0309_200A | 0x0309_200C | 0x0309_2014 => {
                 c.i32()?;
             }
@@ -136,9 +191,28 @@ fn read_ghost(class_id: u32, r: &mut Reader) -> Result<Ghost> {
 
 /// Chunks 0x03092011 and 0x03092019: recorded inputs, then validation data
 fn read_validation(r: &mut Reader, with_seed: bool) -> Result<Vec<Input>> {
+    let inputs = read_inputs(r)?;
+    if inputs.is_none() {
+        return Ok(Vec::new());
+    }
+
+    // SGameGhostValidationData
+    r.string()?;
+    r.u32()?;
+    r.i32()?;
+    r.i32()?;
+    r.string()?;
+    if with_seed {
+        r.i32()?;
+    }
+    Ok(inputs.unwrap_or_default())
+}
+
+/// The recorded inputs: None when the events duration is zero and nothing else follows
+fn read_inputs(r: &mut Reader) -> Result<Option<Vec<Input>>> {
     let events_duration = r.i32()?;
     if events_duration == 0 {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     r.i32()?; // always 0
     let name_count = r.count()?;
@@ -151,17 +225,7 @@ fn read_validation(r: &mut Reader, with_seed: bool) -> Result<Vec<Input>> {
         let name = names.get(r.u8()? as usize).map_or("", String::as_str);
         inputs.push(parse_input(time, name, r.u32()?));
     }
-
-    // SGameGhostValidationData
-    r.string()?;
-    r.u32()?;
-    r.i32()?;
-    r.i32()?;
-    r.string()?;
-    if with_seed {
-        r.i32()?;
-    }
-    Ok(inputs)
+    Ok(Some(inputs))
 }
 
 /// A skin or file reference; only its size matters here
@@ -408,4 +472,74 @@ pub fn trace_body(file: &GbxFile) -> BodyTrace {
         }
     }
     trace
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gbx::Writer;
+
+    /// A Nations ESWC replay body: ghosts in 0x03093004 with old-style samples and player info, a null clip, then
+    /// the inputs in 0x0309300D
+    fn eswc_body() -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u32(0x0309_3004);
+        w.i32(0); // version
+        w.i32(10); // array version
+        w.i32(1);
+        w.i32(1); // node index
+        w.u32(GHOST);
+        w.u32(0x0303_F003);
+        w.data(&[]); // two empty samples
+        w.i32(2);
+        w.i32(0);
+        w.i32(0);
+        w.i32(0); // no state times
+        w.bool(true);
+        w.i32(100);
+        w.i32(8);
+        w.u32(0x0309_2006);
+        w.id_text("StadiumCar");
+        w.id_text("Vehicles");
+        w.id_text("Nadeo");
+        w.string("");
+        w.i32(0);
+        w.string("plastorex");
+        w.u32(0xFACA_DE01);
+        w.i32(7500);
+        w.i32(0); // no record units
+        w.u32(0x0309_300C);
+        w.i32(-1);
+        w.u32(0x0309_300D);
+        w.i32(7390);
+        w.i32(0);
+        w.i32(1);
+        w.id_text("Accelerate");
+        w.i32(1);
+        w.i32(1);
+        w.i32(100_010);
+        w.u8(0);
+        w.u32(1);
+        w.bytes
+    }
+
+    #[test]
+    fn reads_nations_eswc_replays() {
+        let body = eswc_body();
+        let replay = read_replay_body(&mut Reader::new(&body)).unwrap();
+        let ghost = &replay.ghosts[0];
+        assert_eq!((ghost.nickname.as_deref(), ghost.vehicle.as_deref()), (Some("plastorex"), Some("StadiumCar")));
+        assert_eq!((ghost.samples.len(), ghost.sample_period_ms, ghost.samples[1].time_ms), (2, Some(100), 100));
+        assert_eq!(ghost.inputs.len(), 1);
+        assert_eq!((ghost.inputs[0].time_ms, ghost.inputs[0].name.as_str()), (10, "Accelerate"));
+    }
+
+    #[test]
+    fn eswc_replays_with_a_clip_stop_before_the_inputs() {
+        let mut body = eswc_body();
+        let clip = body.windows(4).position(|w| w == 0x0309_300Cu32.to_le_bytes()).unwrap();
+        body[clip + 4..clip + 8].copy_from_slice(&5i32.to_le_bytes());
+        let replay = read_replay_body(&mut Reader::new(&body)).unwrap();
+        assert!(replay.ghosts[0].inputs.is_empty());
+    }
 }

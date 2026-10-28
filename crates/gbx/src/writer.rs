@@ -85,13 +85,14 @@ impl Writer {
         self.id_flagged(NEW_STRING, text);
     }
 
-    /// A string ID whose first appearance carries this flag (0x40000000 or 0x80000000)
+    /// A string ID under one flag (0x40000000 or 0x80000000). Lookups are per flag: older games store a string a
+    /// second time when it was introduced under the other flag.
     fn id_flagged(&mut self, new_flag: u32, text: &str) {
         if text.is_empty() {
             self.id_index(u32::MAX);
             return;
         }
-        match self.ids.iter().position(|(_, s)| s == text) {
+        match self.ids.iter().position(|(f, s)| *f == new_flag && s == text) {
             Some(i) => {
                 let flag = self.ids[i].0;
                 self.id_index(flag | (i as u32 + 1));
@@ -145,6 +146,21 @@ mod tests {
         assert_eq!(r.id_raw().unwrap(), RawId { index: 0x8000_0000, text: Some("Nadeo".into()) });
         assert_eq!(r.id_as_string().unwrap(), "");
         assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn strings_are_looked_up_per_flag() {
+        // "Nadeo" under 0x80000000, then again under 0x40000000 as a new string, as Nations ESWC maps store it
+        let mut w = Writer::new();
+        w.id_raw(&RawId { index: 0x8000_0000, text: Some("Nadeo".into()) });
+        w.id_text("Nadeo");
+        w.id_raw(&RawId { index: 0x8000_0001, text: Some("Nadeo".into()) });
+        assert_eq!(w.id_state().strings.len(), 2);
+        let mut r = Reader::new(&w.bytes);
+        for _ in 0..3 {
+            assert_eq!(r.id_as_string().unwrap(), "Nadeo");
+        }
+        assert_eq!(&w.bytes[w.bytes.len() - 4..], &0x8000_0001u32.to_le_bytes());
     }
 
     #[test]

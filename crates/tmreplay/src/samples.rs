@@ -93,6 +93,28 @@ pub fn read_sample_data(compressed: &[u8], uncompressed_size: usize) -> Result<S
     Ok(SampleData { sample_period_ms, samples })
 }
 
+/// TM Nations ESWC and earlier (ghost chunk 0x0303F003): uncompressed sample bytes, then each sample's offset into
+/// them, state times, whether the time step is fixed, the period, and the sample version. Port of GBX.NET's ReadOld
+/// and ReadSamplesOld.
+pub fn read_old_sample_data(r: &mut Reader) -> Result<SampleData> {
+    let raw = r.data()?;
+    let offsets = r.i32_array()?;
+    r.i32_array()?; // state times
+    r.bool()?; // fixed time step
+    let sample_period_ms = r.i32()?;
+    let version = r.i32()?;
+
+    let mut samples = Vec::with_capacity(offsets.len());
+    for (i, &start) in offsets.iter().enumerate() {
+        let end = offsets.get(i + 1).copied().unwrap_or(raw.len() as i32);
+        let Some(data) = raw.get(start.max(0) as usize..end.max(start) as usize) else {
+            return format_err("ghost sample offsets run past the sample data");
+        };
+        samples.push(to_sample(i as i32 * sample_period_ms, &read_car(data, version)?));
+    }
+    Ok(SampleData { sample_period_ms, samples })
+}
+
 fn read_car(data: &[u8], version: i32) -> Result<RawCar> {
     let mut car = RawCar::default();
     if data.is_empty() {

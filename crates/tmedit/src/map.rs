@@ -1,6 +1,7 @@
 // ABOUTME: A map file opened for editing: its block chunk (0x0304301F) parsed field by field as stored, and written back
 // ABOUTME: into the body continuing the body's lookback string table, with the UID and name kept in step in the headers.
 
+use gbx::class_ids::wrap_chunk_id;
 use gbx::{format_err, GbxFile, IdState, RawId, Reader, Result, Writer};
 use tmreplay::{read_block_skin, reader_at_block_chunk};
 
@@ -190,7 +191,7 @@ impl Map {
             // chunk, or a skippable chunk (extensions use other class IDs)
             let word = |at: usize| file.body.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
             match (word(r.pos), word(r.pos + 4)) {
-                (Some(next), _) if next == FACADE || next & 0xFFFF_F000 == 0x0304_3000 => {}
+                (Some(next), _) if next == FACADE || wrap_chunk_id(next) & 0xFFFF_F000 == 0x0304_3000 => {}
                 (_, Some(SKIP)) => {}
                 _ => return format_err("the block chunk didn't end where the next chunk starts"),
             }
