@@ -1,5 +1,5 @@
-// ABOUTME: InputScopeModule UI: the piano roll (drag to pan, wheel to zoom, click to seek to a tick), per-channel
-// ABOUTME: statistics, and the hold table; a second run can be aligned by race time or by position on the track.
+// ABOUTME: InputScopeModule UI: the piano roll (drag to pan, wheel to zoom, click to seek to a tick), the next input change,
+// ABOUTME: per-channel statistics, and the hold table; a second run can be aligned by race time or by track position.
 
 use crate::timeview::TimeView;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
@@ -18,6 +18,8 @@ const BRAKE: Color32 = Color32::from_rgb(229, 72, 77);
 const STEER: Color32 = Color32::from_rgb(255, 210, 63);
 const RESPAWN: Color32 = Color32::from_rgb(200, 90, 255);
 const CHECKPOINT: Color32 = Color32::from_rgb(90, 180, 255);
+/// The NEXT strip's red, as on race control screens
+const SIGNAL: Color32 = Color32::from_rgb(225, 6, 0);
 // A press in the other run counts as the same press when within this much of reaching the spot
 const MATCH_WINDOW_MS: f32 = 400.0;
 
@@ -119,6 +121,8 @@ impl Module for InputScopeModule {
             session.playback.playing = false;
             session.seek(seek);
         }
+        ui.add_space(4.0);
+        next_strip(ui, session, focus);
         ui.add_space(8.0);
 
         let seek = ui
@@ -131,6 +135,28 @@ impl Module for InputScopeModule {
             session.seek(t as f64);
         }
     }
+}
+
+/// The focused run's next input change after the playhead, and how many seconds and ticks away it is
+fn next_strip(ui: &mut egui::Ui, session: &Session, focus: usize) {
+    let Some(track) = &session.runs[focus].track else { return };
+    let now = session.playback.time_ms.round() as i32;
+    let next = track.next_change(now);
+    let response = egui::Frame::new().fill(SIGNAL.gamma_multiply(0.16)).inner_margin(egui::Margin { left: 12, right: 10, top: 4, bottom: 4 }).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("NEXT").small().strong().color(Color32::from_rgb(255, 95, 95)));
+            ui.label(egui::RichText::new(next.map_or("NO MORE INPUTS".to_owned(), |c| c.text())).strong());
+            if let Some(c) = next {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let ms = c.time_ms - now;
+                    ui.label(egui::RichText::new(format!("in {:.2} s · {} ticks", ms as f32 / 1000.0, ms / TICK_MS)).monospace().weak());
+                });
+            }
+        });
+    });
+    let rect = response.response.rect;
+    ui.painter().rect_filled(Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height())), 0.0, SIGNAL);
 }
 
 impl InputScopeModule {

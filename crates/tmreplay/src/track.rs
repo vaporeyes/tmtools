@@ -38,6 +38,30 @@ pub struct Step {
     pub value: f32,
 }
 
+/// A change of one channel's value
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Change {
+    pub channel: Channel,
+    pub time_ms: i32,
+    pub value: f32,
+}
+
+impl Change {
+    /// What the change asks of the driver, such as "PRESS GAS", "RELEASE BRAKE", or "STEER LEFT 45%"
+    pub fn text(&self) -> String {
+        let name = self.channel.label().to_uppercase();
+        if self.value == 0.0 {
+            return format!("RELEASE {name}");
+        }
+        let share = if self.value < 1.0 { format!(" {}%", (self.value * 100.0).round()) } else { String::new() };
+        match self.channel {
+            Channel::Left | Channel::Right => format!("STEER {name}{share}"),
+            _ if self.value < 1.0 => format!("{name}{share}"),
+            _ => format!("PRESS {name}"),
+        }
+    }
+}
+
 /// A stretch where the channel is above zero; one still held at the end of the run ends there
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hold {
@@ -159,6 +183,17 @@ impl InputTrack {
         self.value_at(Channel::Right, time_ms) - self.value_at(Channel::Left, time_ms)
     }
 
+    /// The first change of any channel after time_ms; pedals come before steering when two change on the same tick
+    pub fn next_change(&self, time_ms: i32) -> Option<Change> {
+        [Channel::Gas, Channel::Brake, Channel::Left, Channel::Right]
+            .into_iter()
+            .filter_map(|channel| {
+                let steps = self.steps(channel);
+                steps.get(steps.partition_point(|s| s.time_ms <= time_ms)).map(|s| Change { channel, time_ms: s.time_ms, value: s.value })
+            })
+            .min_by_key(|c| c.time_ms)
+    }
+
     /// Whether the channel is held at time_ms, and since when it has been held or released (0 before the first press)
     pub fn stretch_at(&self, channel: Channel, time_ms: i32) -> Stretch {
         stretch_at(self.holds(channel), time_ms)
@@ -263,6 +298,26 @@ mod tests {
 
     fn analog(time_ms: i32, name: &str, value: i32) -> Input {
         Input { time_ms, name: name.into(), value: InputValue::Analog(value) }
+    }
+
+    #[test]
+    fn finds_the_next_change_pedals_first_on_a_shared_tick() {
+        let inputs = [button(0, "Accelerate", true), button(500, "Brake", true), analog(500, "Steer", -32768), button(900, "Accelerate", false)];
+        let track = InputTrack::new(&inputs, 1000).unwrap();
+        let next = |t| track.next_change(t).map(|c| (c.channel, c.time_ms, c.value));
+        assert_eq!(next(100), Some((Channel::Brake, 500, 1.0)));
+        assert_eq!(next(500), Some((Channel::Gas, 900, 0.0)));
+        assert_eq!(next(900), None);
+    }
+
+    #[test]
+    fn says_what_a_change_asks_for() {
+        let text = |channel, value| Change { channel, time_ms: 0, value }.text();
+        assert_eq!(text(Channel::Gas, 1.0), "PRESS GAS");
+        assert_eq!(text(Channel::Brake, 0.0), "RELEASE BRAKE");
+        assert_eq!(text(Channel::Left, 0.45), "STEER LEFT 45%");
+        assert_eq!(text(Channel::Right, 1.0), "STEER RIGHT");
+        assert_eq!(text(Channel::Gas, 0.4), "GAS 40%");
     }
 
     #[test]
