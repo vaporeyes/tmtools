@@ -135,13 +135,20 @@ tick.
   each press and release, when the other run did the same thing at the spot
   where this run did it: for example "0.04 earlier" means the other driver
   braked four ticks before reaching that point.
+- The red **NEXT** strip under the roll names the focused run's next input
+  change after the playhead and how soon it comes, for example "RELEASE
+  BRAKE in 0.05 s, 5 ticks".
 
 ## Telemetry Graphs
 
-Plots share their time axis and cursor. Steering and pedals are drawn from
-the exact inputs as step lines; the dashed steering line is what the car's
+Plots share their axis and cursor. Steering and pedals are drawn from the
+exact inputs as step lines; the dashed steering line is what the car's
 samples recorded. The gap plot is positive when a run is behind the focused
 run at the same place on the track. Click any plot to seek.
+
+**X axis** switches between time and distance driven. By distance, runs line
+up by where they are on the track, and a dot on each plot marks where each
+rival was at the focused run's spot.
 
 ## Trajectory Map
 
@@ -172,7 +179,9 @@ splits** on the Trajectory Map (click the focused line to place one,
 right-click a split to remove it; splits are kept per map and remembered
 between launches).
 Each run's time at a placed split is when it passes that point, matched in
-order along the track. The best time of each sector is highlighted, others
+order along the track. Sector times are colored as on F1 timing screens:
+purple for the fastest, green or yellow for faster or slower than the
+focused run, and white for the focused run's own. Times after the fastest
 show what they lose to it, and the **Best** row adds up to the theoretical
 best. Clicking a time jumps to the start of that sector for that run.
 
@@ -294,10 +303,14 @@ loads.
 
 ## Known limitations
 
-- Only binary Gbx files from TrackMania Forever and earlier are read; TM2020
-  replays are not supported. Older replays (Nations ESWC) are read from
-  their own ghost and input chunks; one that has a MediaTracker clip opens
-  without inputs, as the clip comes before them and can't be stepped over.
+- Binary Gbx files from TrackMania Forever, TrackMania 2 (ManiaPlanet), and
+  earlier are read; TM2020 replays are not supported. Older replays (Nations
+  ESWC) are read from their own ghost and input chunks; one that has a
+  MediaTracker clip opens without inputs, as the clip comes before them and
+  can't be stepped over.
+- TM2 Stadium maps are drawn with TMF's blocks, lowered to TMF's floor;
+  blocks TM2 added have no mesh in the export and are skipped. The Map
+  Editor writes TM2 maps back but can't add new block types to them.
 - The Map Editor doesn't add the pillars or clip connections the game's own
   editor adds, and doesn't update the map's checkpoint list or validation.
 - TMUnlimiter maps hide their real blocks, so their maps show only the runs.
