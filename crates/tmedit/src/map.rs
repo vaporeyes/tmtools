@@ -3,7 +3,7 @@
 
 use gbx::class_ids::wrap_chunk_id;
 use gbx::{format_err, GbxFile, IdState, RawId, Reader, Result, Writer};
-use tmreplay::{read_block_skin, reader_at_block_chunk};
+use tmreplay::{read_block_skin, read_waypoint_property, reader_at_block_chunk};
 
 use crate::tail::{drop_clips, read_tail, Tail};
 
@@ -34,7 +34,27 @@ pub struct Block {
     pub stored: [u8; 3],
     pub flags: u32,
     pub skin: Option<Skin>,
+    /// TM2 (ManiaPlanet) data some blocks carry after the skin
+    pub extras: Extras,
 }
+
+/// What TM2 adds to a block when its flags ask for it: checkpoint order (bit 20), card event IDs (bit 18), and a
+/// decal (bit 17). IDs are kept as IDs so they go through the string table when written.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Extras {
+    /// The waypoint property node's bytes, kept as read
+    pub waypoint: Option<Vec<u8>>,
+    /// Two ints and a list of idents for each card
+    pub cards: Vec<(i32, i32, Vec<[RawId; 3]>)>,
+    /// The decal's ID, intensity, and variant
+    pub decal: Option<(RawId, i32, i32)>,
+}
+
+const WAYPOINT: u32 = 1 << 20;
+const CARDS: u32 = 1 << 18;
+const DECAL: u32 = 1 << 17;
+/// Flags bit 19: a character physics property (Shootmania), which this editor doesn't read
+const CHAR_PHYSICS: u32 = 1 << 19;
 
 impl Block {
     pub fn is_ground(&self) -> bool {
@@ -86,7 +106,7 @@ impl BlockChunk {
 
     /// Adds a block (base variant, no skin) at a grid cell and returns its index
     pub fn add(&mut self, name: &str, cell: [i32; 3], dir: u8, is_ground: bool) -> Result<usize> {
-        self.blocks.push(Block { name: name.to_owned(), dir: dir % 4, stored: [0; 3], flags: if is_ground { GROUND } else { 0 }, skin: None });
+        self.blocks.push(Block { name: name.to_owned(), dir: dir % 4, stored: [0; 3], flags: if is_ground { GROUND } else { 0 }, skin: None, extras: Extras::default() });
         let index = self.blocks.len() - 1;
         if let Err(e) = self.set_cell(index, cell) {
             self.blocks.pop();
@@ -128,6 +148,9 @@ impl BlockChunk {
                 w.id_raw(&skin.author);
                 w.raw(&skin.node);
             }
+            if self.version >= 2 {
+                write_extras(w, b);
+            }
         }
     }
 }
@@ -149,9 +172,6 @@ fn read_block_chunk(r: &mut Reader, body: &[u8]) -> Result<BlockChunk> {
         let dir = r.u8()?;
         let stored = [r.u8()?, r.u8()?, r.u8()?];
         let flags = if version == 0 { r.u16()? as u32 } else { r.u32()? };
-        if version >= 2 && flags & ((1 << 17) | (1 << 18) | (1 << 19) | (1 << 20)) != 0 {
-            return format_err(format!("block flags 0x{flags:x} need data this editor doesn't handle"));
-        }
         let skin = if flags & HAS_SKIN != 0 {
             let author = r.id_raw()?;
             let start = r.pos;
@@ -160,9 +180,55 @@ fn read_block_chunk(r: &mut Reader, body: &[u8]) -> Result<BlockChunk> {
         } else {
             None
         };
-        blocks.push(Block { name, dir, stored, flags, skin });
+        let extras = if version >= 2 { read_extras(r, body, flags)? } else { Extras::default() };
+        blocks.push(Block { name, dir, stored, flags, skin, extras });
     }
     Ok(BlockChunk { map_info, map_name, decoration, size, need_unlock, version, blocks })
+}
+
+/// The TM2 extras the flags ask for, in GBX.NET's order
+fn read_extras(r: &mut Reader, body: &[u8], flags: u32) -> Result<Extras> {
+    if flags & CHAR_PHYSICS != 0 {
+        return format_err(format!("block flags 0x{flags:x} need data this editor doesn't handle"));
+    }
+    let mut extras = Extras::default();
+    if flags & WAYPOINT != 0 {
+        let start = r.pos;
+        r.node_ref(read_waypoint_property)?;
+        extras.waypoint = Some(body[start..r.pos].to_vec());
+    }
+    if flags & CARDS != 0 {
+        for _ in 0..r.count()? {
+            let (a, b) = (r.i32()?, r.i32()?);
+            let idents = (0..r.count()?).map(|_| Ok([r.id_raw()?, r.id_raw()?, r.id_raw()?])).collect::<Result<_>>()?;
+            extras.cards.push((a, b, idents));
+        }
+    }
+    if flags & DECAL != 0 {
+        extras.decal = Some((r.id_raw()?, r.i32()?, r.i32()?));
+    }
+    Ok(extras)
+}
+
+fn write_extras(w: &mut Writer, b: &Block) {
+    if b.flags & WAYPOINT != 0 {
+        w.raw(b.extras.waypoint.as_deref().unwrap_or(&(-1i32).to_le_bytes()));
+    }
+    if b.flags & CARDS != 0 {
+        w.i32(b.extras.cards.len() as i32);
+        for (a, c, idents) in &b.extras.cards {
+            w.i32(*a);
+            w.i32(*c);
+            w.i32(idents.len() as i32);
+            idents.iter().flatten().for_each(|id| w.id_raw(id));
+        }
+    }
+    if b.flags & DECAL != 0 {
+        let (id, intensity, variant) = b.extras.decal.clone().unwrap_or((RawId { index: u32::MAX, text: None }, 1, -1));
+        w.id_raw(&id);
+        w.i32(intensity);
+        w.i32(variant);
+    }
 }
 
 /// A map file with its block chunk parsed out of the body

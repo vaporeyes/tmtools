@@ -5,6 +5,7 @@ use crate::mood::{mood_for, Mood};
 use crate::placement::{plan_blocks, GridOptions};
 use crate::vehicle::VehicleModel;
 use glam::{Mat4, Vec3};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tmassets::material::{resolve_material, MaterialRecord, MaterialSpec};
@@ -138,7 +139,29 @@ fn solid_parts(solid: &Solid, at: &[Mat4], materials: &HashMap<String, MaterialR
 }
 
 /// The map's blocks and decoration as drawable parts, lit by the map's mood; None when the map has no readable blocks
+const TM2_STADIUM_HEIGHT: i32 = 40;
+const TMF_STADIUM_HEIGHT: i32 = 32;
+/// Levels between TM2's Stadium floor (9) and TMF's (1)
+const TM2_FLOOR_SHIFT: i32 = 8;
+
+/// The map as TMF would place it: TM2 (ManiaPlanet) Stadium maps are 40 levels tall with the floor at level 9, where
+/// TMF's are 32 tall with it at level 1, so their blocks come down to TMF's floor. Other maps are returned as they are.
+pub fn in_tmf_frame(map: &ReplayMap) -> Cow<'_, ReplayMap> {
+    match map.size {
+        Some([x, TM2_STADIUM_HEIGHT, z]) if map.collection.as_deref() == Some("Stadium") => {
+            let mut fitted = map.clone();
+            fitted.size = Some([x, TMF_STADIUM_HEIGHT, z]);
+            if let Some(blocks) = fitted.blocks.as_mut() {
+                blocks.iter_mut().for_each(|b| b.y -= TM2_FLOOR_SHIFT);
+            }
+            Cow::Owned(fitted)
+        }
+        _ => Cow::Borrowed(map),
+    }
+}
+
 pub fn build_map(store: &AssetStore, map: &ReplayMap) -> Result<Option<MapScene>, String> {
+    let map = in_tmf_frame(map);
     let (Some(blocks), Some(collection_name), Some(size)) = (&map.blocks, map.collection.as_deref(), map.size) else { return Ok(None) };
     let err = |e: tmassets::AssetError| e.to_string();
     let collection = store.collection(collection_name).map_err(err)?.ok_or_else(|| format!("The {collection_name} environment isn't in the asset export"))?;
@@ -190,6 +213,24 @@ pub fn vehicle_model(store: &AssetStore, vehicle: &str) -> Result<Option<Vehicle
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn map(collection: &str, size: [i32; 3], ys: &[i32]) -> ReplayMap {
+        let blocks = ys
+            .iter()
+            .map(|&y| tmreplay::MapBlock { name: "StadiumRoadMain".into(), x: 2, y, z: 3, dir: 0, is_ground: y == 9, variant: 0, sub_variant: 0, is_clip: false })
+            .collect();
+        ReplayMap { collection: Some(collection.into()), size: Some(size), blocks: Some(blocks), ..Default::default() }
+    }
+
+    #[test]
+    fn brings_tm2_stadium_maps_down_to_tmf_floor() {
+        let tm2 = map("Stadium", [32, 40, 32], &[9, 19]);
+        let fitted = in_tmf_frame(&tm2);
+        assert_eq!(fitted.size, Some([32, 32, 32]));
+        assert_eq!(fitted.blocks.as_ref().unwrap().iter().map(|b| b.y).collect::<Vec<_>>(), [1, 11]);
+        assert!(matches!(in_tmf_frame(&map("Stadium", [32, 32, 32], &[1])), Cow::Borrowed(_)));
+        assert!(matches!(in_tmf_frame(&map("Canyon", [36, 40, 36], &[9])), Cow::Borrowed(_)));
+    }
 
     #[test]
     fn computes_area_weighted_normals() {

@@ -1,5 +1,5 @@
-// ABOUTME: Reads TMF replays (CGameCtnReplayRecord) and maps (CGameCtnChallenge): ghosts, inputs, samples, and blocks.
-// ABOUTME: Port of gbx-tools-3d-node's parseReplay.ts; the same chunk readers also drive the inspector's traced walk.
+// ABOUTME: Reads TMF, TM2, and Nations ESWC replays and maps (CGameCtnReplayRecord, CGameCtnChallenge): ghosts, inputs,
+// ABOUTME: samples, and blocks. Ported from gbx-tools-3d-node's parseReplay.ts; the same readers drive the inspector's walk.
 
 use crate::inputs::parse_input;
 use crate::model::{Checkpoint, Ghost, Input, MapBlock, Replay, ReplayMap};
@@ -12,6 +12,7 @@ const GHOST: u32 = 0x0309_2000;
 const COLLECTOR_LIST: u32 = 0x0301_B000;
 const CHALLENGE_PARAMETERS: u32 = 0x0305_B000;
 const BLOCK_SKIN: u32 = 0x0305_9000;
+const WAYPOINT_PROPERTY: u32 = 0x2E00_9000;
 
 pub fn parse_replay(bytes: &[u8]) -> Result<Replay> {
     let file = GbxFile::parse(bytes)?;
@@ -121,6 +122,14 @@ fn read_ghost(class_id: u32, r: &mut Reader) -> Result<Ghost> {
                 ghost.sample_period_ms = Some(data.sample_period_ms);
                 ghost.samples = data.samples;
             }
+            // ManiaPlanet (TM2): whether the ghost was replaying, then the same sample data
+            0x0303_F006 => {
+                c.bool()?;
+                let uncompressed = c.count()?;
+                let data = read_sample_data(c.data()?, uncompressed)?;
+                ghost.sample_period_ms = Some(data.sample_period_ms);
+                ghost.samples = data.samples;
+            }
             // TM Nations ESWC and earlier: uncompressed sample data, then the class of the recorded vehicle
             0x0303_F003 => {
                 let data = read_old_sample_data(c)?;
@@ -129,6 +138,24 @@ fn read_ghost(class_id: u32, r: &mut Reader) -> Result<Ghost> {
             }
             0x0303_F004 => {
                 c.u32()?;
+            }
+            // ManiaPlanet (TM2) appearance: read for its IDs, which start the lookback table later chunks refer to, and
+            // for the car and nickname. A badge's layout isn't known, so a ghost with one keeps the nickname from elsewhere.
+            0x0309_2000 => {
+                let version = c.i32()?;
+                let appearance_version = if version >= 9 { c.i32()? } else { 0 };
+                ghost.vehicle = Some(c.ident()?.id);
+                c.vec3()?; // light trail color
+                let skins = c.count()?;
+                for _ in 0..skins {
+                    read_pack_desc(c)?;
+                }
+                if !c.bool()? {
+                    if appearance_version >= 1 {
+                        c.string()?;
+                    }
+                    ghost.nickname = Some(c.string()?);
+                }
             }
             0x0309_2005 => ghost.race_time_ms = c.time_nullable()?,
             // Vehicle, skin, and nickname as older games store them: TM 1.0 and PU (0x003), Sunrise and Nations
@@ -182,6 +209,17 @@ fn read_ghost(class_id: u32, r: &mut Reader) -> Result<Ghost> {
             0x0309_2018 => ghost.vehicle = Some(c.ident()?.id),
             0x0309_2019 => ghost.inputs = read_validation(c, true)?,
             0x0309_2011 => ghost.inputs = read_validation(c, false)?,
+            // ManiaPlanet (TM2): a 256-bit security key
+            0x0309_201C => c.skip(32)?,
+            // ManiaPlanet (TM2) validation: TMUF's layout, then (when there are inputs) the steering wheel sensitivity flag
+            0x0309_2025 => {
+                if c.i32()? == 0 {
+                    ghost.inputs = read_validation(c, true)?;
+                    if !ghost.inputs.is_empty() {
+                        c.bool()?;
+                    }
+                }
+            }
             _ => return Ok(None),
         }
         Ok(Some(Flow::Continue))
@@ -368,6 +406,11 @@ fn read_challenge_parameters(class_id: u32, r: &mut Reader) -> Result<()> {
                 0x0305_B006 => c.count()? * 4,
                 0x0305_B007 => 0,
                 0x0305_B008 => 8,
+                // ManiaPlanet (TM2): the ghost that validated the map
+                0x0305_B00D => {
+                    c.node_ref(read_ghost)?;
+                    0
+                }
                 _ => return Ok(None),
             };
             c.skip(size)?;
@@ -388,8 +431,31 @@ fn read_block(r: &mut Reader, version: i32) -> Result<MapBlock> {
         r.id()?; // author
         r.node_ref(read_block_skin)?;
     }
-    if version >= 2 && flags & ((1 << 17) | (1 << 18) | (1 << 19) | (1 << 20)) != 0 {
-        return format_err(format!("block flags 0x{flags:x} need data this reader doesn't handle"));
+    // ManiaPlanet (TM2) extras, in GBX.NET's order: none of them changes where or how the block is drawn
+    if version >= 2 {
+        if flags & (1 << 19) != 0 {
+            return format_err(format!("block flags 0x{flags:x} need data this reader doesn't handle"));
+        }
+        // Checkpoint, start, and finish order
+        if flags & (1 << 20) != 0 {
+            r.node_ref(read_waypoint_property)?;
+        }
+        // Card event IDs
+        if flags & (1 << 18) != 0 {
+            for _ in 0..r.count()? {
+                r.i32()?;
+                r.i32()?;
+                for _ in 0..r.count()? {
+                    r.ident()?;
+                }
+            }
+        }
+        // Decal: its ID, intensity, and variant
+        if flags & (1 << 17) != 0 {
+            r.id()?;
+            r.i32()?;
+            r.i32()?;
+        }
     }
 
     // From version 6, coordinates are stored one higher on X and Z
@@ -405,6 +471,26 @@ fn read_block(r: &mut Reader, version: i32) -> Result<MapBlock> {
         sub_variant: (flags >> 6) & 63,
         is_clip: flags & (1 << 13) != 0,
     })
+}
+
+/// A TM2 checkpoint's spawn and order, or tag and order: read only to step over it
+pub fn read_waypoint_property(class_id: u32, r: &mut Reader) -> Result<()> {
+    if class_id != WAYPOINT_PROPERTY {
+        return format_err(format!("waypoint property of class 0x{class_id:08X} can't be read"));
+    }
+    read_chunks(r, |id, c| {
+        if id != 0x2E00_9000 {
+            return Ok(None);
+        }
+        if c.i32()? == 1 {
+            c.i32()?;
+        } else {
+            c.string()?;
+        }
+        c.i32()?; // order
+        Ok(Some(Flow::Continue))
+    })
+    .map(|_| ())
 }
 
 /// A block skin node (custom textures on signs): read only to step over it
@@ -532,6 +618,39 @@ mod tests {
         assert_eq!((ghost.samples.len(), ghost.sample_period_ms, ghost.samples[1].time_ms), (2, Some(100), 100));
         assert_eq!(ghost.inputs.len(), 1);
         assert_eq!((ghost.inputs[0].time_ms, ghost.inputs[0].name.as_str()), (10, "Accelerate"));
+    }
+
+    /// A TM2 ghost node: the skippable appearance chunk starts the lookback table, then the ghost UID refers to a
+    /// string it introduced, then the security key
+    #[test]
+    fn reads_tm2_ghosts_whose_ids_start_in_the_appearance_chunk() {
+        let mut appearance = Writer::new();
+        appearance.i32(2); // version
+        appearance.id_text("StadiumCar");
+        appearance.id_text("Vehicles");
+        appearance.id_text("Nadeo");
+        appearance.f32(0.0);
+        appearance.f32(1.0);
+        appearance.f32(0.5); // trail color
+        appearance.i32(0); // no skins
+        appearance.bool(false); // no badges
+        appearance.string("$f00Lou");
+        appearance.string(""); // avatar
+
+        let mut w = Writer::new();
+        w.u32(0x0309_2000);
+        w.u32(0x534B_4950); // "PIKS"
+        w.data(&appearance.bytes);
+        w.u32(0x0309_200E);
+        w.u32(0x4000_0001); // "StadiumCar", without a version: the appearance chunk read it
+        w.u32(0x0309_201C);
+        w.raw(&[7; 32]);
+        w.u32(0x0309_2005);
+        w.i32(22_573);
+        w.u32(0xFACA_DE01);
+
+        let ghost = read_ghost(GHOST, &mut Reader::new(&w.bytes)).unwrap();
+        assert_eq!((ghost.vehicle.as_deref(), ghost.nickname.as_deref(), ghost.race_time_ms), (Some("StadiumCar"), Some("$f00Lou"), Some(22_573)));
     }
 
     #[test]

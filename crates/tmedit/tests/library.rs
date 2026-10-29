@@ -63,8 +63,10 @@ fn edits_read_back() {
         assert_eq!(after.blocks[last].y, cell[1], "{name}");
         let reopened = Map::parse(&out).unwrap();
         assert_eq!(reopened.chunk, map.chunk, "{name}");
-        let header = reopened.file.header_reader(0x0304_3003).unwrap().read(1).unwrap()[0];
-        assert!(header > 0);
+        // Maps embedded in TM2 replays come without header chunks
+        if let Some(mut header) = reopened.file.header_reader(0x0304_3003) {
+            assert!(header.read(1).unwrap()[0] > 0, "{name}");
+        }
     }
 }
 
@@ -76,12 +78,16 @@ fn new_block_types_and_authors_read_back() {
     };
     for (name, bytes) in &maps {
         let mut map = Map::parse(bytes).unwrap();
-        assert!(map.tail.understood, "{name}: {:?}", map.tail);
         let had_clips = !map.tail.clip_spans.is_empty();
         let collection = parse_challenge(bytes).unwrap().collection;
         // A block name no map uses, so the string table gains a slot
         let index = map.chunk.add(&format!("{collection}TmtoolsProbe"), [0, 9, 0], 1, false).unwrap();
         map.set_author("tmtools_tester").unwrap();
+        // TM2 maps have chunks after their blocks that might refer to strings, so a new block type is refused
+        if !map.tail.understood || map.tail.unknown_skippable > 0 {
+            assert!(map.to_bytes(true).is_err(), "{name}: a table change should be refused");
+            continue;
+        }
         if had_clips {
             assert!(map.to_bytes(true).is_err(), "{name}: clips should block a table change");
             map.drop_clips();
