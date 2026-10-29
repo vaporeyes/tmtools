@@ -1,5 +1,5 @@
 // ABOUTME: Sector splits: boundaries from checkpoints and placed points along the focused run, each run's time at every
-// ABOUTME: boundary, sector durations, the best of each sector across runs, and the theoretical best they add up to.
+// ABOUTME: boundary, sector durations, the best of each sector, the theoretical best, and F1-style sector colors.
 
 use crate::gap::{pass_time_after, position_at};
 use crate::model::Ghost;
@@ -67,6 +67,45 @@ pub fn best_sectors(runs: &[Vec<Option<f32>>]) -> (Vec<Option<f32>>, Option<f32>
     (best, total.filter(|_| count > 0))
 }
 
+/// Sector times within this of the fastest, in milliseconds, count as the fastest: a tie to the hundredth shown
+pub const FASTEST_SLACK_MS: f32 = 5.0;
+
+/// F1's colors for one run per car: purple for the fastest in the sector, then against the focused run green when
+/// faster and yellow when slower; the focused run's own sector is Own unless it is the fastest
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SectorColor {
+    Fastest,
+    Faster,
+    Slower,
+    Own,
+}
+
+/// Each run's color in each sector, from each run's sector durations; focus is the focused run's row. Sectors without
+/// a time, or without the focused run's time to compare to, have none.
+pub fn sector_colors(runs: &[Vec<Option<f32>>], focus: usize) -> Vec<Vec<Option<SectorColor>>> {
+    let (best, _) = best_sectors(runs);
+    runs.iter()
+        .enumerate()
+        .map(|(row, sectors)| {
+            sectors
+                .iter()
+                .enumerate()
+                .map(|(i, time)| {
+                    let (time, fastest) = (time.as_ref()?, best[i]?);
+                    if time - fastest < FASTEST_SLACK_MS {
+                        return Some(SectorColor::Fastest);
+                    }
+                    if row == focus {
+                        return Some(SectorColor::Own);
+                    }
+                    let reference = runs.get(focus)?.get(i).copied().flatten()?;
+                    Some(if *time < reference { SectorColor::Faster } else { SectorColor::Slower })
+                })
+                .collect()
+        })
+        .collect()
+}
+
 /// Where a boundary is on the track, for drawing: a checkpoint is wherever the focused run was at its time
 pub fn boundary_position(focus: &Ghost, boundary: &Boundary) -> Option<Vec3> {
     match boundary {
@@ -79,6 +118,25 @@ pub fn boundary_position(focus: &Ghost, boundary: &Boundary) -> Option<Vec3> {
 mod tests {
     use super::*;
     use crate::model::{Checkpoint, Sample};
+
+    #[test]
+    fn colors_purple_for_the_fastest_then_green_or_yellow_against_the_focus() {
+        use SectorColor::*;
+        let runs = vec![
+            vec![Some(5000.0), Some(4000.0), Some(4000.0)], // focused
+            vec![Some(4900.0), Some(4200.0), Some(3900.0)],
+            vec![Some(5100.0), Some(3900.0), Some(4002.0)],
+        ];
+        assert_eq!(
+            sector_colors(&runs, 0),
+            vec![vec![Some(Own), Some(Own), Some(Own)], vec![Some(Fastest), Some(Slower), Some(Fastest)], vec![Some(Slower), Some(Fastest), Some(Slower)]]
+        );
+        // Focusing another run moves the reference, not the fastest
+        assert_eq!(sector_colors(&runs, 1)[0], vec![Some(Slower), Some(Faster), Some(Slower)]);
+        // Within a hundredth of the fastest counts as the fastest
+        assert_eq!(sector_colors(&[vec![Some(4000.0)], vec![Some(4003.0)]], 0)[1], vec![Some(Fastest)]);
+        assert_eq!(sector_colors(&[vec![None], vec![Some(4000.0)], vec![Some(4500.0)]], 0)[2], vec![None]);
+    }
 
     /// A run along x at a constant speed (units per second) with checkpoints at the given times
     fn run(speed: f32, duration_ms: i32, checkpoints: &[i32]) -> Ghost {

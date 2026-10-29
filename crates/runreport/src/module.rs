@@ -4,11 +4,13 @@
 use egui::{Color32, RichText};
 use tmreplay::format_race_time;
 use tmreplay::report::{events, EventKind};
-use tmreplay::sectors::{best_sectors, boundaries, boundary_times, sector_durations, Boundary};
+use tmreplay::sectors::{best_sectors, boundaries, boundary_times, sector_colors, sector_durations, Boundary, SectorColor};
 use tmtools_core::{color_swatch, setting, Module, RenderState, Session, Settings};
 
-const BEST: Color32 = Color32::from_rgb(90, 220, 120);
-const LOSS: Color32 = Color32::from_rgb(240, 120, 110);
+// Sector colors as on F1 timing screens
+const FASTEST: Color32 = Color32::from_rgb(179, 107, 255);
+const FASTER: Color32 = Color32::from_rgb(47, 214, 123);
+const SLOWER: Color32 = Color32::from_rgb(255, 210, 63);
 const BRAKE: Color32 = Color32::from_rgb(229, 72, 77);
 const STEER: Color32 = Color32::from_rgb(255, 210, 63);
 
@@ -251,6 +253,7 @@ fn sector_table(ui: &mut egui::Ui, session: &Session, focus: usize) -> Option<f3
     let times: Vec<Vec<Option<f32>>> = runs.iter().map(|&r| boundary_times(session.ghost(r), &bounds)).collect();
     let sectors: Vec<Vec<Option<f32>>> = times.iter().map(|t| sector_durations(t)).collect();
     let (best, theoretical) = best_sectors(&sectors);
+    let colors = sector_colors(&sectors, runs.iter().position(|&r| r == focus).unwrap_or(0));
 
     let mut seek = None;
     egui::Grid::new("runreport-sectors").striped(true).num_columns(bounds.len() + 2).show(ui, |ui| {
@@ -275,11 +278,17 @@ fn sector_table(ui: &mut egui::Ui, session: &Session, focus: usize) -> Option<f3
             for (i, sector) in sectors[row].iter().enumerate() {
                 match (sector, best[i]) {
                     (Some(t), Some(b)) => {
-                        let lost = t - b;
-                        let text = if lost < 5.0 {
-                            RichText::new(seconds(*t)).color(BEST).strong()
-                        } else {
-                            RichText::new(format!("{}  {}", seconds(*t), loss(lost))).color(LOSS)
+                        // Purple for the fastest; the rest show what they lost to it, colored against the focused run
+                        let text = match colors[row][i] {
+                            Some(SectorColor::Fastest) => RichText::new(seconds(*t)).color(FASTEST).strong(),
+                            color => {
+                                let text = RichText::new(format!("{}  {}", seconds(*t), loss(t - b)));
+                                match color {
+                                    Some(SectorColor::Faster) => text.color(FASTER),
+                                    Some(SectorColor::Slower) => text.color(SLOWER),
+                                    _ => text.color(tmtools_core::theme::TEXT),
+                                }
+                            }
                         };
                         let start = if i == 0 { Some(0.0) } else { times[row][i - 1] };
                         if ui.link(text).on_hover_text("Jump to the start of this sector for this run").clicked() {
@@ -302,6 +311,14 @@ fn sector_table(ui: &mut egui::Ui, session: &Session, focus: usize) -> Option<f3
         }
         ui.label(theoretical.map_or("-".into(), |t| format_race_time(t.round() as i64)));
         ui.end_row();
+    });
+
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("Fastest").color(FASTEST).small());
+        ui.label(RichText::new("Faster than the focused run").color(FASTER).small());
+        ui.label(RichText::new("Slower than the focused run").color(SLOWER).small());
+        ui.label(RichText::new("Focused run").small());
+        ui.label(RichText::new("; times after the fastest show what they lost to it").small().weak());
     });
 
     if let (Some(theoretical), Some(actual)) = (theoretical, session.ghost(focus).race_time_ms) {
