@@ -1,5 +1,5 @@
 // ABOUTME: Distance a car has driven along its path, in world units (meters in TrackMania), up to any moment of the run.
-// ABOUTME: Respawns teleport the car, so steps much longer than its speed allows are left out.
+// ABOUTME: Respawns teleport the car, so steps much longer than its speed allows are left out; also distance back to time.
 
 use crate::model::Sample;
 
@@ -42,6 +42,55 @@ pub fn total_distance(samples: &[Sample]) -> f32 {
     samples.windows(2).filter(|p| is_driven(&p[0], &p[1])).map(|p| step_length(&p[0], &p[1])).sum()
 }
 
+/// Distance driven at each sample, in meters: the running total distance_at gives at the sample times
+pub fn cumulative_distance(samples: &[Sample]) -> Vec<f32> {
+    let mut totals = Vec::with_capacity(samples.len());
+    let mut total = 0.0;
+    for (i, s) in samples.iter().enumerate() {
+        if i > 0 && is_driven(&samples[i - 1], s) {
+            total += step_length(&samples[i - 1], s);
+        }
+        totals.push(total);
+    }
+    totals
+}
+
+/// Distance driven at time_ms from the running totals of cumulative_distance, in meters; a quick lookup for drawing
+pub fn distance_at_time(samples: &[Sample], totals: &[f32], time_ms: f32) -> f32 {
+    let Some(last) = samples.len().checked_sub(1) else { return 0.0 };
+    let next = samples.partition_point(|s| (s.time_ms as f32) <= time_ms);
+    if next == 0 {
+        return 0.0;
+    }
+    if next > last {
+        return totals[last];
+    }
+    let (t0, t1) = (samples[next - 1].time_ms as f32, samples[next].time_ms as f32);
+    let share = if t1 > t0 { (time_ms - t0) / (t1 - t0) } else { 1.0 };
+    totals[next - 1] + (totals[next] - totals[next - 1]) * share
+}
+
+/// When the car had driven this far, in milliseconds: the first moment it got there, so a respawn that stands still
+/// doesn't move it. Clamped to the run.
+pub fn time_at_distance(samples: &[Sample], totals: &[f32], meters: f32) -> f32 {
+    let Some(last) = samples.len().checked_sub(1) else { return 0.0 };
+    if meters <= 0.0 {
+        return samples[0].time_ms as f32;
+    }
+    if meters >= totals[last] {
+        return samples[last].time_ms as f32;
+    }
+    // The first sample at or past the distance
+    let at = totals.partition_point(|&d| d < meters);
+    let (d0, d1) = (totals[at - 1], totals[at]);
+    let (t0, t1) = (samples[at - 1].time_ms as f32, samples[at].time_ms as f32);
+    if d1 > d0 {
+        t0 + (meters - d0) / (d1 - d0) * (t1 - t0)
+    } else {
+        t1
+    }
+}
+
 /// "850 m" below a kilometer, "1.24 km" from there
 pub fn format_distance(meters: f32) -> String {
     if meters < 1000.0 {
@@ -71,6 +120,19 @@ mod tests {
         assert!((distance_at(&samples, 1050.0) - 10.5).abs() < 1e-4);
         assert_eq!(distance_at(&samples, 0.0), 0.0);
         assert!((distance_at(&samples, 9000.0) - 20.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn running_totals_match_distance_at_and_invert() {
+        let samples = run(2000);
+        let totals = cumulative_distance(&samples);
+        assert_eq!(totals.len(), samples.len());
+        for t in [0.0, 50.0, 1000.0, 1050.0, 1999.0, 5000.0] {
+            assert!((distance_at_time(&samples, &totals, t) - distance_at(&samples, t)).abs() < 1e-4, "{t}");
+        }
+        assert!((time_at_distance(&samples, &totals, 10.5) - 1050.0).abs() < 1e-3);
+        assert_eq!(time_at_distance(&samples, &totals, -1.0), 0.0);
+        assert_eq!(time_at_distance(&samples, &totals, 99.0), 2000.0);
     }
 
     #[test]
