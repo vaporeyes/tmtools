@@ -1,0 +1,13 @@
+# ABOUTME: tmgen crate: generates TMF Stadium maps of a style, from block connections learned by following real cars
+# ABOUTME: through real maps, and writes them as map files the game can load. Used by the tmgen tool and the Map Editor.
+[package]
+name = "tmgen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gbx = { path = "../gbx" }
+tmreplay = { path = "../tmreplay" }
+tmassets = { path = "../tmassets" }
+tmedit = { path = "../tmedit" }

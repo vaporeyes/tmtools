@@ -1676,6 +1676,7 @@ dependencies = [
  "rfd",
  "tmassets",
  "tmedit",
+ "tmgen",
  "tmreplay",
  "tmscene",
  "tmtools-core",
@@ -3117,6 +3118,16 @@ name = "tmedit"
 version = "0.1.0"
 dependencies = [
  "gbx",
+ "tmreplay",
+]
+
+[[package]]
+name = "tmgen"
+version = "0.1.0"
+dependencies = [
+ "gbx",
+ "tmassets",
+ "tmedit",
  "tmreplay",
 ]
 

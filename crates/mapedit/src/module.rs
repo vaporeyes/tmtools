@@ -48,6 +48,10 @@ pub struct MapEditModule {
     view: View,
     fitted: bool,
     message: Option<String>,
+    /// Generating: the replay folder to learn from, what was learned from it, and the settings
+    generate_folder: Option<std::path::PathBuf>,
+    learned: Option<(std::path::PathBuf, tmgen::Library)>,
+    generate: tmgen::Settings,
 }
 
 impl Default for MapEditModule {
@@ -63,6 +67,9 @@ impl Default for MapEditModule {
             view: View { center: [16.0, 16.0], scale: 16.0 },
             fitted: false,
             message: None,
+            generate_folder: None,
+            learned: None,
+            generate: tmgen::Settings::default(),
         }
     }
 }
@@ -104,6 +111,60 @@ fn file_name(name: &str) -> String {
 }
 
 impl MapEditModule {
+    /// The Generate menu: a Stadium platform/tech track from what cars did in a folder of replays, opened for editing
+    fn generate_menu(&mut self, ui: &mut egui::Ui, session: &Session) {
+        ui.label(egui::RichText::new("A Stadium platform/tech track, built from block connections real cars drove in your replays.").small().weak());
+        ui.horizontal(|ui| {
+            let folder = self.generate_folder.as_ref().map_or("choose a replay folder".to_owned(), |f| f.display().to_string());
+            ui.label(egui::RichText::new(folder).small());
+            if ui.button("Folder...").clicked() {
+                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                    self.generate_folder = Some(folder);
+                }
+            }
+        });
+        egui::Grid::new("mapedit-generate").num_columns(2).show(ui, |ui| {
+            ui.label("Seed");
+            ui.add(egui::DragValue::new(&mut self.generate.seed).range(1..=u64::MAX));
+            ui.end_row();
+            ui.label("Pieces");
+            ui.add(egui::DragValue::new(&mut self.generate.length).range(8..=80));
+            ui.end_row();
+            ui.label("Checkpoint every");
+            ui.add(egui::DragValue::new(&mut self.generate.checkpoint_every).range(3..=30));
+            ui.end_row();
+        });
+        if ui.add_enabled(self.generate_folder.is_some(), egui::Button::new("Generate")).clicked() {
+            self.message = Some(match self.generated(session) {
+                Ok(doc) => {
+                    let text = format!("Generated {} with seed {}; set your login as Author and Save as to try it in the game", doc.name, self.generate.seed);
+                    self.open(doc);
+                    text
+                }
+                Err(e) => e,
+            });
+            ui.close();
+        }
+    }
+
+    fn generated(&mut self, session: &Session) -> Result<Doc, String> {
+        let folder = self.generate_folder.clone().ok_or("Choose a replay folder to learn from")?;
+        let store = session.assets.as_ref().ok_or("Choose the game asset folder first")?;
+        if self.learned.as_ref().is_none_or(|(f, _)| *f != folder) {
+            let infos = store.block_infos("Stadium").map_err(|e| e.to_string())?;
+            let library = tmgen::read_library(&folder, &infos).map_err(|e| format!("{}: {e}", folder.display()))?;
+            self.learned = Some((folder, library));
+        }
+        let (_, library) = self.learned.as_ref().expect("learned above");
+        let (_, base) = library.bases.first().ok_or("No TMF Stadium map in that folder's replays can be built on")?;
+        let track = tmgen::generate(&library.model, self.generate).ok_or("No track found for these settings; try another seed or fewer pieces")?;
+        let name = format!("tmgen {}", self.generate.seed);
+        let bytes = tmgen::write_map(base, &track, &name, "", self.generate.seed)?;
+        let mut doc = open_bytes(&bytes, name)?;
+        doc.dirty = true;
+        Ok(doc)
+    }
+
     fn open(&mut self, doc: Doc) {
         // Start on the level most blocks are on, where the track usually is
         let mut counts = std::collections::HashMap::new();
@@ -142,6 +203,7 @@ impl MapEditModule {
                     }
                 }
             }
+            ui.menu_button("Generate", |ui| self.generate_menu(ui, session)).response.on_hover_text("Build a new Stadium platform/tech track from your replays");
             let maps: Vec<usize> = (0..session.files.len()).filter(|&f| session.files[f].replay.as_ref().map_or(true, |r| r.embedded_map.is_some())).collect();
             if !maps.is_empty() {
                 let mut chosen = None;
@@ -460,17 +522,27 @@ impl Module for MapEditModule {
     fn save_settings(&self, s: &mut Settings) {
         s.insert("mapedit.author".into(), self.author.clone());
         s.insert("mapedit.show_other_levels".into(), self.show_other_levels.to_string());
+        if let Some(folder) = &self.generate_folder {
+            s.insert("mapedit.generate_folder".into(), folder.display().to_string());
+        }
+        s.insert("mapedit.generate_length".into(), self.generate.length.to_string());
+        s.insert("mapedit.generate_checkpoints".into(), self.generate.checkpoint_every.to_string());
     }
 
     fn load_settings(&mut self, s: &Settings) {
         self.author = setting(s, "mapedit.author").unwrap_or_default();
         self.show_other_levels = setting(s, "mapedit.show_other_levels").unwrap_or(self.show_other_levels);
+        self.generate_folder = setting::<String>(s, "mapedit.generate_folder").map(Into::into);
+        self.generate.length = setting(s, "mapedit.generate_length").unwrap_or(self.generate.length);
+        self.generate.checkpoint_every = setting(s, "mapedit.generate_checkpoints").unwrap_or(self.generate.checkpoint_every);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, _wgpu: Option<&tmtools_core::RenderState>) {
-        // With nothing open yet, start on the focused run's map
+        // With nothing open yet, start on the focused run's map, or else the first loaded map file
         if self.doc.is_none() && self.message.is_none() {
-            if let Some(file) = session.focus.map(|r| &session.files[session.runs[r].file]) {
+            let focused = session.focus.map(|r| &session.files[session.runs[r].file]);
+            let first_map = || session.files.iter().find(|f| f.replay.is_err() && Map::parse(&f.bytes).is_ok());
+            if let Some(file) = focused.or_else(first_map) {
                 if let Ok(doc) = open_bytes(&file.bytes, file.title()) {
                     self.open(doc);
                 }

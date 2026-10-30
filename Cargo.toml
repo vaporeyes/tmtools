@@ -9,6 +9,7 @@ members = [
     "crates/tmscene",
     "crates/tmedit",
     "crates/mapedit",
+    "crates/tmgen",
     "crates/tmtools-core",
     "crates/inputscope",
     "crates/telemetry",

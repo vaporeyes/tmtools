@@ -12,5 +12,6 @@ tmreplay = { path = "../tmreplay" }
 tmassets = { path = "../tmassets" }
 tmscene = { path = "../tmscene" }
 tmedit = { path = "../tmedit" }
+tmgen = { path = "../tmgen" }
 egui.workspace = true
 rfd.workspace = true
