@@ -260,6 +260,29 @@ it was read. MediaTracker clips may refer to block names by position, so on
 maps that have clips, only block types the map already uses can be placed
 until you drop the clips.
 
+## Map generator
+
+`tmgen` builds Stadium platform/tech tracks from how real cars drove. It
+follows every run in a folder of replays through its map, block by block,
+and learns each connection: the block the car drove into next, where it sat,
+which way it was turned, and which way the car came in. A seeded search then
+chains those connections from a start line through checkpoints to a finish.
+It uses only touching pieces of the style, keeps air clear above the track,
+and never overlaps blocks or leaves the map.
+
+```bash
+cargo run --release -p tmgen --bin tmgen -- --library <replay folder> \
+  --assets <asset export> --seed 7 --length 30 --author <your TMF login>
+```
+
+The same seed always gives the same map. The track is written onto one of
+the library's TMF Stadium maps with its blocks and medal times cleared, so
+the game treats it as unvalidated: open it in the editor and drive it to
+validate it. Without `--author`, the map keeps its base map's author and the
+game asks for coppers to edit it. In the app, the Map Editor's **Generate**
+menu does the same from a replay folder you choose, and opens the track for
+editing.
+
 ## Testing
 
 `cargo test --workspace` covers the Gbx reader, LZO decoder, chunk loop,
@@ -311,8 +334,10 @@ loads.
 - TM2 Stadium maps are drawn with TMF's blocks, lowered to TMF's floor;
   blocks TM2 added have no mesh in the export and are skipped. The Map
   Editor writes TM2 maps back but can't add new block types to them.
-- The Map Editor doesn't add the pillars or clip connections the game's own
-  editor adds, and doesn't update the map's checkpoint list or validation.
+- The Map Editor and generator don't add the pillars or clip connections the
+  game's own editor adds; saved and generated maps are unvalidated.
+- The generator has no physics: every connection it uses was driven by a real
+  player, but a sequence of them isn't guaranteed to be drivable at speed.
 - TMUnlimiter maps hide their real blocks, so their maps show only the runs.
 - Without an asset export, block cells are one grid square each and ground
   height comes from a small table of environment and map sizes.
