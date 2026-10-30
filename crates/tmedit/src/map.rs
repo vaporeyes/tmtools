@@ -9,6 +9,11 @@ use crate::tail::{drop_clips, read_tail, Tail};
 
 const COMMON_HEADER: u32 = 0x0304_3003;
 const XML_HEADER: u32 = 0x0304_3005;
+const DESCRIPTION_HEADER: u32 = 0x0304_3002;
+/// Map parameter chunks holding medal times, and the body's checkpoint list
+const MEDALS: u32 = 0x0305_B004;
+const MEDALS_WITH_TIP: u32 = 0x0305_B00A;
+const CHECKPOINT_LIST: u32 = 0x0304_3017;
 const FACADE: u32 = 0xFACA_DE01;
 const SKIP: u32 = 0x534B_4950; // "PIKS"
 /// Flags bit 15: the block has an author and a skin node (custom sign textures)
@@ -333,6 +338,46 @@ impl Map {
         Ok(())
     }
 
+    /// Clears the map's validation, for a map whose blocks changed: the medal and author times in the headers and the
+    /// body become unset, and the checkpoint list (skippable chunk 0x03043017) is dropped for the game to rebuild
+    pub fn clear_validation(&mut self) -> Result<()> {
+        let trace = tmreplay::trace_body(&self.file);
+        let mut body = self.file.body.clone();
+        for span in trace.spans.iter().filter(|s| s.data_start < self.start) {
+            match span.id {
+                // Bronze, silver, gold, and author times, then a count
+                MEDALS => body[span.data_start..span.data_start + 16].fill(0xFF),
+                // A tip, then the same four times
+                MEDALS_WITH_TIP => {
+                    let mut r = Reader::new(&body[span.data_start..]);
+                    r.string()?;
+                    let at = span.data_start + r.pos;
+                    body[at..at + 16].fill(0xFF);
+                }
+                _ => {}
+            }
+        }
+        if let Some(span) = trace.spans.iter().find(|s| s.id == CHECKPOINT_LIST && s.depth == 0 && s.end <= self.start) {
+            body.drain(span.start..span.end);
+            let removed = span.end - span.start;
+            self.start -= removed;
+            self.end -= removed;
+        }
+        self.file.body = body;
+        self.tail = read_tail(&self.file.body, self.end, self.ids_after.strings.len());
+
+        for header in &mut self.file.header_chunks {
+            match header.id {
+                DESCRIPTION_HEADER => clear_description_times(&mut header.data)?,
+                XML_HEADER => {
+                    header.data = rewrite_xml_element(&header.data, "times", &[("bronze", "-1"), ("silver", "-1"), ("gold", "-1"), ("authortime", "-1"), ("authorscore", "0")])?
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Makes `login` the map's author, so the game lets that player open it in the editor without paying coppers
     pub fn set_author(&mut self, login: &str) -> Result<()> {
         let old = self.author().to_owned();
@@ -360,6 +405,33 @@ fn string_flag(id: &RawId) -> u32 {
     }
 }
 
+/// Header 0x03043002: a version byte, (before version 2) the map ident and name, the need-unlock flag, the four medal
+/// times, then by version a byte, the cost, the lap flag, the mode, the clones flag, and the author score
+fn clear_description_times(data: &mut [u8]) -> Result<()> {
+    let mut r = Reader::new(data);
+    let version = r.u8()?;
+    if version < 2 {
+        r.ident()?;
+        r.string()?;
+    }
+    r.u32()?; // need unlock
+    if version < 1 {
+        return Ok(());
+    }
+    let times = r.pos;
+    let mut score = times + 16 + if version == 2 { 1 } else { 0 };
+    for (from, size) in [(4, 4), (5, 4), (6, 4), (9, 4)] {
+        if version >= from {
+            score += size;
+        }
+    }
+    data[times..times + 16].fill(0xFF);
+    if version >= 10 && score + 4 <= data.len() {
+        data[score..score + 4].fill(0);
+    }
+    Ok(())
+}
+
 /// Header 0x03043003 starts with a version byte, the map ident (UID, collection, author), and the name; the rest is
 /// kept as stored. Fields given as None keep their stored values.
 fn rewrite_common_header(data: &[u8], uid: Option<&str>, name: Option<&str>, author: Option<&str>) -> Result<Vec<u8>> {
@@ -385,13 +457,18 @@ fn rewrite_common_header(data: &[u8], uid: Option<&str>, name: Option<&str>, aut
 
 /// Header 0x03043005 is one XML string; its ident element carries the UID, name, and author
 fn rewrite_xml_header(data: &[u8], attrs: &[(&str, &str)]) -> Result<Vec<u8>> {
+    rewrite_xml_element(data, "ident", attrs)
+}
+
+/// Header 0x03043005's XML with attributes of one element replaced
+fn rewrite_xml_element(data: &[u8], element: &str, attrs: &[(&str, &str)]) -> Result<Vec<u8>> {
     let xml = Reader::new(data).string()?;
-    let Some(ident_at) = xml.find("<ident ") else { return format_err("the XML header has no ident element") };
+    let Some(ident_at) = xml.find(&format!("<{element} ")) else { return format_err(format!("the XML header has no {element} element")) };
     let ident_end = ident_at + xml[ident_at..].find('>').unwrap_or(xml.len() - ident_at);
     let mut ident = xml[ident_at..ident_end].to_owned();
     for &(attr, value) in attrs {
         let key = format!(" {attr}=\"");
-        let Some(at) = ident.find(&key) else { return format_err(format!("the XML ident has no {attr}")) };
+        let Some(at) = ident.find(&key) else { return format_err(format!("the XML {element} has no {attr}")) };
         let value_at = at + key.len();
         let value_end = value_at + ident[value_at..].find('"').unwrap_or(0);
         ident.replace_range(value_at..value_end, &xml_escape(value));
@@ -452,6 +529,22 @@ mod tests {
         assert_eq!((ident.id.as_str(), ident.author.as_str()), ("fresh", "me"));
         assert_eq!(r.string().unwrap(), "New");
         assert_eq!(r.read(3).unwrap(), [1, 2, 3]);
+    }
+
+    #[test]
+    fn clears_the_description_headers_medal_times_and_author_score() {
+        // ShortLOL's header 0x03043002 (version 11): medals 21.00, 17.00, 15.00, author 13.63, then cost 4236, and
+        // the author score at byte 37
+        let mut data = vec![
+            0x0b, 0, 0, 0, 0, 0x08, 0x52, 0, 0, 0x68, 0x42, 0, 0, 0x98, 0x3a, 0, 0, 0x3e, 0x35, 0, 0, 0x8c, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0x3e, 0x35, 0, 0, 0, 0, 0, 0,
+        ];
+        clear_description_times(&mut data).unwrap();
+        let mut r = Reader::new(&data);
+        r.read(5).unwrap();
+        assert_eq!((0..4).map(|_| r.u32().unwrap()).collect::<Vec<_>>(), [u32::MAX; 4]);
+        assert_eq!(r.u32().unwrap(), 4236, "the cost stays");
+        assert_eq!(&data[37..41], &[0; 4]);
     }
 
     #[test]

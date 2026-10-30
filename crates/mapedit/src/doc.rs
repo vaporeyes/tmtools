@@ -232,6 +232,8 @@ impl Doc {
     /// The file to save: the edited blocks under this document's UID and name, and the author when one is given
     pub fn to_bytes(&self, author: &str) -> Result<Vec<u8>, String> {
         let mut map = self.map.clone();
+        // A saved map is a new map, so the medal times it came with aren't its own; the game validates it afresh
+        map.clear_validation().map_err(|e| e.to_string())?;
         map.set_identity(&self.uid, &self.name).map_err(|e| e.to_string())?;
         if !author.is_empty() {
             map.set_author(author).map_err(|e| e.to_string())?;

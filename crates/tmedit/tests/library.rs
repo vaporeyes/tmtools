@@ -100,9 +100,45 @@ fn new_block_types_and_authors_read_back() {
         assert_eq!(after.author, "tmtools_tester", "{name}");
         let reopened = Map::parse(&out).unwrap();
         assert!(reopened.tail.ids_free(), "{name}");
-        let header = reopened.file.header_reader(0x0304_3003).unwrap();
-        let mut header = header;
-        header.u8().unwrap();
-        assert_eq!(header.ident().unwrap().author, "tmtools_tester", "{name}");
+        // Maps embedded in TM2 and older replays come without header chunks
+        if let Some(mut header) = reopened.file.header_reader(0x0304_3003) {
+            header.u8().unwrap();
+            assert_eq!(header.ident().unwrap().author, "tmtools_tester", "{name}");
+        }
+    }
+}
+
+#[test]
+fn cleared_validation_reads_back_unset() {
+    let Some(maps) = library_maps() else {
+        eprintln!("TMTOOLS_REPLAY_DIR is not set; skipping");
+        return;
+    };
+    for (name, bytes) in &maps {
+        let mut map = Map::parse(bytes).unwrap();
+        let blocks = map.chunk.clone();
+        map.clear_validation().unwrap_or_else(|e| panic!("{name}: {e}"));
+        let out = map.to_bytes(true).unwrap();
+        let reopened = Map::parse(&out).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(reopened.chunk, blocks, "{name}: blocks stay");
+        parse_challenge(&out).unwrap_or_else(|e| panic!("{name}: {e}"));
+
+        let trace = tmreplay::trace_body(&reopened.file);
+        assert!(trace.spans.iter().all(|s| s.id != 0x0304_3017), "{name}: the checkpoint list is gone");
+        for span in trace.spans.iter().filter(|s| s.id == 0x0305_B004) {
+            assert_eq!(&reopened.file.body[span.data_start..span.data_start + 16], &[0xFF; 16], "{name}: body medals");
+        }
+        if let Some(xml) = reopened.file.header_reader(0x0304_3005) {
+            let xml = { let mut xml = xml; xml.string().unwrap() };
+            if xml.contains("<times ") {
+                assert!(xml.contains("authortime=\"-1\"") && xml.contains("gold=\"-1\""), "{name}: {xml}");
+            }
+        }
+        if let Some(mut description) = reopened.file.header_reader(0x0304_3002) {
+            if description.u8().unwrap() >= 2 {
+                description.u32().unwrap();
+                assert_eq!(description.u32().unwrap(), u32::MAX, "{name}: header bronze");
+            }
+        }
     }
 }
