@@ -2,7 +2,8 @@
 // ABOUTME: .Challenge.Gbx. Run with --help for the options.
 
 use std::path::PathBuf;
-use tmgen::{generate, read_library, write_map, Settings};
+use tmgen::generate::{is_hole, is_speedup};
+use tmgen::{generate, pillars, read_library, write_map, Pillars, Settings};
 
 const USAGE: &str = "tmgen: generate a TMF Stadium platform/tech map
 
@@ -12,6 +13,9 @@ const USAGE: &str = "tmgen: generate a TMF Stadium platform/tech map
   --seed N         the same seed gives the same map (default: 1)
   --length N       pieces before the finish, roughly (default: 30)
   --checkpoints N  pieces between checkpoints (default: 8)
+  --speedups N     turbo pads to spread along the track (default: 2)
+  --holes N        floor holes to spread along the track (default: 1)
+  --pillars KIND   none, tube, or inflatable:V with V a look from 0 to 8 (default: tube)
   --mood NAME      Day, Sunset, Sunrise, or Night, when the library has a base map in it (default: any)
   --name TEXT      map name (default: \"tmgen <seed>\")
   --author LOGIN   your TMF login, so you can open the map in the editor without paying coppers";
@@ -39,6 +43,18 @@ fn run() -> Result<(), String> {
             "--seed" => settings.seed = number(value()?)?,
             "--length" => settings.length = number(value()?)? as usize,
             "--checkpoints" => settings.checkpoint_every = number(value()?)?.max(1) as usize,
+            "--speedups" => settings.speedups = number(value()?)? as usize,
+            "--holes" => settings.holes = number(value()?)? as usize,
+            "--pillars" => {
+                settings.pillars = match value()?.as_str() {
+                    "none" => Pillars::None,
+                    "tube" => Pillars::Tube,
+                    other => match other.strip_prefix("inflatable") {
+                        Some(look) => Pillars::Inflatable(look.trim_start_matches(':').parse().unwrap_or(0).min(8)),
+                        None => return Err(format!("unknown pillars {other}: use none, tube, or inflatable:V")),
+                    },
+                }
+            }
             "--mood" => mood = Some(value()?),
             "--name" => name = Some(value()?),
             "--author" => author = value()?,
@@ -67,13 +83,23 @@ fn run() -> Result<(), String> {
         })?;
     let track = generate(&lib.model, settings).ok_or("no track found for these settings; try another seed or a shorter length")?;
     let name = name.unwrap_or(format!("tmgen {}", settings.seed));
-    let bytes = write_map(base, &track, &name, &author, settings.seed)?;
+    let supports = pillars(&lib.model, &track, settings);
+    let blocks: Vec<_> = track.iter().chain(&supports).cloned().collect();
+    let bytes = write_map(base, &blocks, &name, &author, settings.seed)?;
     let out = out.unwrap_or(PathBuf::from(format!("{name}.Challenge.Gbx")));
     std::fs::write(&out, bytes).map_err(|e| format!("{}: {e}", out.display()))?;
 
-    let checkpoints = track.iter().filter(|p| tmgen::generate::is_checkpoint(&p.name)).count();
+    let count = |f: fn(&str) -> bool| track.iter().filter(|p| f(&p.name)).count();
     let top = track.iter().map(|p| p.anchor[1]).max().unwrap_or(1) - 1;
-    println!("Wrote {}: {} pieces, {checkpoints} checkpoints, up to {top} levels high, {base_mood} mood", out.display(), track.len());
+    println!(
+        "Wrote {}: {} pieces, {} checkpoints, {} speedups, {} floor holes, {} pillar blocks, up to {top} levels high, {base_mood} mood",
+        out.display(),
+        track.len(),
+        count(tmgen::generate::is_checkpoint),
+        count(is_speedup),
+        count(is_hole),
+        supports.len()
+    );
     if author.is_empty() {
         println!("No --author given, so the map keeps its base map's author and the game asks for coppers to edit it");
     }

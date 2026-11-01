@@ -1,5 +1,5 @@
-// ABOUTME: Generates a track from learned connections: a seeded, weighted depth-first search from a start line through
-// ABOUTME: pieces of one style to a finish, with checkpoints spaced along it, every piece inside the map with clear air above.
+// ABOUTME: Generates a track from learned connections: a seeded, weighted depth-first search from a start line through a
+// ABOUTME: style's pieces to a finish, with checkpoints, speedups, and floor holes spaced along it and clear air above.
 
 use crate::frame::{anchor, cells, to_world, Cell};
 use crate::learn::{Entry, Key, Link, Model};
@@ -12,10 +12,42 @@ pub enum Style {
     PlatformTech,
 }
 
+/// Pieces that make a track less technical: loops and walls, and the road pieces built for full speed
+const TECH_BANNED: [&str; 3] = ["Loop", "Wall", "RoadMainFW"];
+
+/// How much more or less often a tech track uses a piece than players drove it, by name, first match wins: fewer
+/// banked and wide sweeping turns, more slopes and road and platform changes
+const TECH_WEIGHTS: [(&str, f64); 7] = [
+    ("RoadTilt", 0.35),
+    ("GTCurve", 0.5),
+    ("GTDiag", 0.6),
+    ("Slope", 1.6),
+    ("PlatformToRoad", 1.4),
+    ("YShape", 1.2),
+    ("Platform", 1.2),
+];
+
 impl Style {
     pub fn allows(self, name: &str) -> bool {
         match self {
-            Style::PlatformTech => ["StadiumPlatform", "StadiumRoadMain", "StadiumRoadTilt"].iter().any(|p| name.starts_with(p)),
+            Style::PlatformTech => {
+                ["StadiumPlatform", "StadiumRoadMain", "StadiumRoadTilt", "StadiumHole"].iter().any(|p| name.starts_with(p))
+                    && !TECH_BANNED.iter().any(|b| name.contains(b))
+            }
+        }
+    }
+
+    /// The style's preference for a piece, on top of how often players drove into it
+    pub fn weight(self, name: &str) -> f64 {
+        match self {
+            Style::PlatformTech => TECH_WEIGHTS.iter().find(|(part, _)| name.contains(part)).map_or(1.0, |&(_, w)| w),
+        }
+    }
+
+    /// Links the style never takes: a slope piece straight into the same piece turned around makes a bump, not tech
+    pub fn bans(self, from: &Key, link: &Link) -> bool {
+        match self {
+            Style::PlatformTech => link.next.name == from.name && link.turn == 2 && from.name.contains("Slope"),
         }
     }
 }
@@ -33,6 +65,27 @@ pub fn is_checkpoint(name: &str) -> bool {
     name.contains("Checkpoint")
 }
 
+/// Turbo pads
+pub fn is_speedup(name: &str) -> bool {
+    name.contains("Turbo")
+}
+
+/// Floor pieces with a hole in them
+pub fn is_hole(name: &str) -> bool {
+    name.starts_with("StadiumHole")
+}
+
+/// How elevated pieces are held up
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pillars {
+    /// Floating, as most players leave them
+    None,
+    /// Tube pillars stacked from the floor, with a tube under the piece
+    Tube,
+    /// Inflatable pillars stacked from the floor, with a support under the piece; the variant picks the look
+    Inflatable(u32),
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Settings {
     pub seed: u64,
@@ -41,13 +94,56 @@ pub struct Settings {
     pub length: usize,
     /// Pieces between checkpoints
     pub checkpoint_every: usize,
+    /// Turbo pads and floor holes to spread along the track
+    pub speedups: usize,
+    pub holes: usize,
+    pub pillars: Pillars,
     /// Map size in cells
     pub size: Cell,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { seed: 1, style: Style::PlatformTech, length: 30, checkpoint_every: 8, size: [32, 32, 32] }
+        Self { seed: 1, style: Style::PlatformTech, length: 30, checkpoint_every: 8, speedups: 2, holes: 1, pillars: Pillars::Tube, size: [32, 32, 32] }
+    }
+}
+
+/// What the track has so far, and pieces since the last of each kind
+#[derive(Debug, Clone, Copy, Default)]
+struct Counts {
+    checkpoints: usize,
+    since_checkpoint: usize,
+    speedups: usize,
+    since_speedup: usize,
+    holes: usize,
+    since_hole: usize,
+}
+
+impl Counts {
+    fn after(mut self, name: &str) -> Self {
+        let bump = |count: &mut usize, since: &mut usize, hit: bool| {
+            if hit {
+                *count += 1;
+                *since = 0;
+            } else {
+                *since += 1;
+            }
+        };
+        bump(&mut self.checkpoints, &mut self.since_checkpoint, is_checkpoint(name));
+        bump(&mut self.speedups, &mut self.since_speedup, is_speedup(name));
+        bump(&mut self.holes, &mut self.since_hole, is_hole(name));
+        self
+    }
+}
+
+/// A feature's weight: none once the track has enough, a lot when one is due, little in between
+fn spread(count: usize, since: usize, wanted: usize, length: usize) -> f64 {
+    if count >= wanted {
+        0.0
+    } else if since >= length / (wanted + 1) {
+        40.0
+    } else {
+        0.05
     }
 }
 
@@ -63,10 +159,12 @@ pub struct Placed {
 
 /// The level ground blocks stand on in a 32-tall Stadium map
 const GROUND: i32 = 1;
-/// Search steps across all starts before giving up
-const BUDGET: usize = 300_000;
+/// Search steps across all starts before giving up, and for one start before trying another: a start that leads into a
+/// corner is left early rather than searched to the end
+const BUDGET: usize = 600_000;
+const START_BUDGET: usize = 25_000;
 /// Starts tried before giving up
-const STARTS: usize = 24;
+const STARTS: usize = 48;
 
 /// A small deterministic generator (xorshift64*), so a seed always gives the same track
 struct Rng(u64);
@@ -97,9 +195,10 @@ struct Search<'a> {
     /// Cells taken by blocks, and the air kept clear above them
     taken: HashSet<Cell>,
     clear: HashSet<Cell>,
-    checkpoints: usize,
-    since_checkpoint: usize,
+    counts: Counts,
     steps: usize,
+    /// Where this start's search stops
+    limit: usize,
 }
 
 /// Generates a track, or None when no start leads to a finish within the search budget
@@ -117,7 +216,7 @@ pub fn generate(model: &Model, settings: Settings) -> Option<Vec<Placed>> {
         let [sx, _, sz] = settings.size;
         // Somewhere central, so the track has room to wander
         let at = [sx / 4 + (rng.next() % (sx as u64 / 2)) as i32, GROUND, sz / 4 + (rng.next() % (sz as u64 / 2)) as i32];
-        let mut search = Search { model, settings, rng: Rng::new(rng.next()), track: Vec::new(), taken: HashSet::new(), clear: HashSet::new(), checkpoints: 0, since_checkpoint: 0, steps };
+        let mut search = Search { model, settings, rng: Rng::new(rng.next()), track: Vec::new(), taken: HashSet::new(), clear: HashSet::new(), counts: Counts::default(), steps, limit: (steps + START_BUDGET).min(BUDGET) };
         let units = model.units(&key.name, key.ground);
         let start_anchor = anchor(at, &units, dir);
         if !search.fits(&key.name, key.ground, start_anchor, dir) {
@@ -180,16 +279,23 @@ impl Search<'_> {
     fn candidates(&mut self, key: &Key) -> Vec<Link> {
         let Some(links) = self.model.links.get(key) else { return Vec::new() };
         let style = self.settings.style;
-        let due_checkpoint = self.since_checkpoint >= self.settings.checkpoint_every;
-        let due_finish = self.track.len() >= self.settings.length;
+        let (counts, settings) = (self.counts, self.settings);
+        let due_checkpoint = counts.since_checkpoint >= settings.checkpoint_every;
+        let due_finish = self.track.len() >= settings.length;
         // In a fixed order before drawing, so a seed gives the same track whatever order the map keeps them in
         let mut links: Vec<(&Link, &u32)> = links.iter().collect();
         links.sort_by(|a, b| (&a.0.next, a.0.offset, a.0.turn).cmp(&(&b.0.next, b.0.offset, b.0.turn)));
         let mut scored: Vec<(f64, Link)> = links
             .into_iter()
-            .filter(|(l, _)| style.allows(&l.next.name) && !is_start(&l.next.name))
+            .filter(|(l, _)| style.allows(&l.next.name) && !is_start(&l.next.name) && !style.bans(key, l))
             .map(|(l, &count)| {
-                let mut weight = count as f64;
+                let mut weight = count as f64 * style.weight(&l.next.name);
+                if is_speedup(&l.next.name) {
+                    weight *= spread(counts.speedups, counts.since_speedup, settings.speedups, settings.length);
+                }
+                if is_hole(&l.next.name) {
+                    weight *= spread(counts.holes, counts.since_hole, settings.holes, settings.length);
+                }
                 if is_checkpoint(&l.next.name) {
                     weight *= if due_checkpoint { 50.0 } else { 0.05 };
                 }
@@ -211,11 +317,11 @@ impl Search<'_> {
         let checkpoints_needed = self.settings.length / self.settings.checkpoint_every.max(1);
         for link in self.candidates(key) {
             self.steps += 1;
-            if self.steps > BUDGET {
+            if self.steps > self.limit {
                 return false;
             }
             let finish = is_finish(&link.next.name);
-            if finish && self.checkpoints < checkpoints_needed {
+            if finish && self.counts.checkpoints < checkpoints_needed {
                 continue;
             }
             // A dead end, unless it finishes the track
@@ -236,22 +342,57 @@ impl Search<'_> {
             if finish {
                 return true;
             }
-            let (saved_checkpoints, saved_since) = (self.checkpoints, self.since_checkpoint);
-            if is_checkpoint(&link.next.name) {
-                self.checkpoints += 1;
-                self.since_checkpoint = 0;
-            } else {
-                self.since_checkpoint += 1;
-            }
+            let saved = self.counts;
+            self.counts = saved.after(&link.next.name);
             if self.extend(&link.next, next_origin, next_dir) {
                 return true;
             }
-            self.checkpoints = saved_checkpoints;
-            self.since_checkpoint = saved_since;
+            self.counts = saved;
             self.unplace();
         }
         false
     }
+}
+
+/// Pillar columns under the track's elevated pieces, from the floor to just under each piece, built the way real maps
+/// stack them: a ground piece, then shaft pieces, then a top piece. Every other cell gets one, so long elevated runs
+/// aren't walled in, and a column goes only where every level down to the floor is free of track and its clear air.
+pub fn pillars(model: &Model, track: &[Placed], settings: Settings) -> Vec<Placed> {
+    let (shaft, top, variant) = match settings.pillars {
+        Pillars::None => return Vec::new(),
+        Pillars::Tube => ("StadiumTubePillar", "StadiumTube", 0),
+        Pillars::Inflatable(v) => ("StadiumInflatablePillar", "StadiumInflatableSupport", v),
+    };
+    let mut taken: HashSet<Cell> = HashSet::new();
+    let mut clear: HashSet<Cell> = HashSet::new();
+    let mut lowest: Vec<Cell> = Vec::new();
+    for p in track {
+        let piece = cells(p.anchor, &model.units(&p.name, p.ground), p.dir);
+        for &c in &piece {
+            taken.insert(c);
+            clear.insert([c[0], c[1] + 1, c[2]]);
+        }
+        if p.anchor[1] > GROUND {
+            for &c in &piece {
+                if !piece.contains(&[c[0], c[1] - 1, c[2]]) && (c[0] + c[2]) % 2 == 0 {
+                    lowest.push(c);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for [x, y, z] in lowest {
+        let column: Vec<Cell> = (GROUND..y).map(|level| [x, level, z]).collect();
+        if column.iter().any(|c| taken.contains(c) || clear.contains(c)) {
+            continue;
+        }
+        for &c in &column {
+            taken.insert(c);
+            let name = if c[1] == y - 1 && c[1] > GROUND { top } else { shaft };
+            out.push(Placed { name: name.into(), anchor: c, dir: 0, ground: c[1] == GROUND, variant });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -295,6 +436,40 @@ mod tests {
             let d = [pair[1].anchor[0] - pair[0].anchor[0], pair[1].anchor[1] - pair[0].anchor[1], pair[1].anchor[2] - pair[0].anchor[2]];
             assert_eq!(d, turned);
         }
+    }
+
+    #[test]
+    fn tech_bans_slope_bumps_loops_and_walls() {
+        let style = Style::PlatformTech;
+        let slope = key("StadiumRoadMainSlopeBase", Entry::Side(0));
+        let back = |turn| Link { next: key("StadiumRoadMainSlopeBase", Entry::Side(2)), offset: [0, 0, 1], turn };
+        assert!(style.bans(&slope, &back(2)));
+        assert!(!style.bans(&slope, &back(0)));
+        assert!(!style.allows("StadiumPlatformLoopStart") && !style.allows("StadiumPlatformWallBorder"));
+        assert!(style.allows("StadiumHolePillar") && style.allows("StadiumRoadMainTurbo"));
+        assert!(style.weight("StadiumRoadTiltCorner") < 1.0 && style.weight("StadiumRoadMainBiSlopeStart") > 1.0);
+    }
+
+    #[test]
+    fn features_are_spread_until_there_are_enough() {
+        // Two wanted on a 30-piece track: due every 10 pieces, none once there are two
+        assert_eq!(spread(0, 10, 2, 30), 40.0);
+        assert!(spread(0, 3, 2, 30) < 1.0);
+        assert_eq!(spread(2, 20, 2, 30), 0.0);
+    }
+
+    #[test]
+    fn pillars_stack_from_the_floor_and_skip_columns_through_track() {
+        let model = Model::new(&[]);
+        let piece = |name: &str, anchor: Cell| Placed { name: name.into(), anchor, dir: 0, ground: anchor[1] == GROUND, variant: 0 };
+        // An elevated piece at level 4 over free ground, and one at level 4 over a ground piece
+        let track = vec![piece("StadiumRoadMain", [2, 4, 2]), piece("StadiumRoadMain", [4, 4, 4]), piece("StadiumRoadMain", [4, 1, 4])];
+        let settings = Settings { pillars: Pillars::Inflatable(3), ..Default::default() };
+        let built = pillars(&model, &track, settings);
+        let column: Vec<(&str, i32, bool)> = built.iter().map(|p| (p.name.as_str(), p.anchor[1], p.ground)).collect();
+        assert_eq!(column, [("StadiumInflatablePillar", 1, true), ("StadiumInflatablePillar", 2, false), ("StadiumInflatableSupport", 3, false)]);
+        assert!(built.iter().all(|p| p.anchor[0] == 2 && p.variant == 3));
+        assert!(pillars(&model, &track, Settings { pillars: Pillars::None, ..Default::default() }).is_empty());
     }
 
     #[test]

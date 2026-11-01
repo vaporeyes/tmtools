@@ -133,6 +133,25 @@ impl MapEditModule {
             ui.label("Checkpoint every");
             ui.add(egui::DragValue::new(&mut self.generate.checkpoint_every).range(3..=30));
             ui.end_row();
+            ui.label("Speedups");
+            ui.add(egui::DragValue::new(&mut self.generate.speedups).range(0..=8));
+            ui.end_row();
+            ui.label("Floor holes");
+            ui.add(egui::DragValue::new(&mut self.generate.holes).range(0..=6));
+            ui.end_row();
+            ui.label("Pillars");
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.generate.pillars, tmgen::Pillars::None, "None");
+                ui.selectable_value(&mut self.generate.pillars, tmgen::Pillars::Tube, "Tube");
+                let inflatable = matches!(self.generate.pillars, tmgen::Pillars::Inflatable(_));
+                if ui.selectable_label(inflatable, "Inflatable").clicked() && !inflatable {
+                    self.generate.pillars = tmgen::Pillars::Inflatable(0);
+                }
+                if let tmgen::Pillars::Inflatable(look) = &mut self.generate.pillars {
+                    ui.add(egui::DragValue::new(look).range(0..=8)).on_hover_text("The inflatables' look");
+                }
+            });
+            ui.end_row();
         });
         if ui.add_enabled(self.generate_folder.is_some(), egui::Button::new("Generate")).clicked() {
             self.message = Some(match self.generated(session) {
@@ -158,8 +177,10 @@ impl MapEditModule {
         let (_, library) = self.learned.as_ref().expect("learned above");
         let (_, base) = library.bases.first().ok_or("No TMF Stadium map in that folder's replays can be built on")?;
         let track = tmgen::generate(&library.model, self.generate).ok_or("No track found for these settings; try another seed or fewer pieces")?;
+        let supports = tmgen::pillars(&library.model, &track, self.generate);
+        let blocks: Vec<tmgen::Placed> = track.into_iter().chain(supports).collect();
         let name = format!("tmgen {}", self.generate.seed);
-        let bytes = tmgen::write_map(base, &track, &name, "", self.generate.seed)?;
+        let bytes = tmgen::write_map(base, &blocks, &name, "", self.generate.seed)?;
         let mut doc = open_bytes(&bytes, name)?;
         doc.dirty = true;
         Ok(doc)
@@ -527,6 +548,14 @@ impl Module for MapEditModule {
         }
         s.insert("mapedit.generate_length".into(), self.generate.length.to_string());
         s.insert("mapedit.generate_checkpoints".into(), self.generate.checkpoint_every.to_string());
+        s.insert("mapedit.generate_speedups".into(), self.generate.speedups.to_string());
+        s.insert("mapedit.generate_holes".into(), self.generate.holes.to_string());
+        let pillars = match self.generate.pillars {
+            tmgen::Pillars::None => "none".to_owned(),
+            tmgen::Pillars::Tube => "tube".to_owned(),
+            tmgen::Pillars::Inflatable(look) => format!("inflatable:{look}"),
+        };
+        s.insert("mapedit.generate_pillars".into(), pillars);
     }
 
     fn load_settings(&mut self, s: &Settings) {
@@ -535,6 +564,13 @@ impl Module for MapEditModule {
         self.generate_folder = setting::<String>(s, "mapedit.generate_folder").map(Into::into);
         self.generate.length = setting(s, "mapedit.generate_length").unwrap_or(self.generate.length);
         self.generate.checkpoint_every = setting(s, "mapedit.generate_checkpoints").unwrap_or(self.generate.checkpoint_every);
+        self.generate.speedups = setting(s, "mapedit.generate_speedups").unwrap_or(self.generate.speedups);
+        self.generate.holes = setting(s, "mapedit.generate_holes").unwrap_or(self.generate.holes);
+        self.generate.pillars = match setting::<String>(s, "mapedit.generate_pillars").as_deref() {
+            Some("none") => tmgen::Pillars::None,
+            Some(look) if look.starts_with("inflatable") => tmgen::Pillars::Inflatable(look.trim_start_matches("inflatable:").parse().unwrap_or(0)),
+            _ => self.generate.pillars,
+        };
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, _wgpu: Option<&tmtools_core::RenderState>) {

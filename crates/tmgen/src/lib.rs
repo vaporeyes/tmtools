@@ -7,7 +7,7 @@ pub mod learn;
 pub mod library;
 pub mod write;
 
-pub use generate::{generate, Placed, Settings, Style};
+pub use generate::{generate, pillars, Pillars, Placed, Settings, Style};
 pub use learn::{Entry, Key, Link, Model};
 pub use library::{read_library, Library};
 pub use write::{is_base, track_uid, write_map};

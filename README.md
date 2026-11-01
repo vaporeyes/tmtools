@@ -272,8 +272,18 @@ and never overlaps blocks or leaves the map.
 
 ```bash
 cargo run --release -p tmgen --bin tmgen -- --library <replay folder> \
-  --assets <asset export> --seed 7 --length 30 --author <your TMF login>
+  --assets <asset export> --seed 7 --length 30 --author <your TMF login> \
+  --speedups 2 --holes 1 --pillars tube
 ```
+
+The tech style leaves out loops, walls, and full-speed road, uses fewer
+banked and wide sweeping turns and more slopes and road-to-platform
+changes, and never turns a slope straight back on itself into a bump.
+Turbo pads (`--speedups`) and floor holes (`--holes`) are spread along the
+track like checkpoints. Elevated pieces get pillar columns from the floor,
+under every other cell where nothing is in the way: `tube`,
+`inflatable:V` (V picks one of the 9 looks), or `none` to leave them
+floating, as most players do.
 
 The same seed always gives the same map. The track is written onto one of
 the library's TMF Stadium maps with its blocks and medal times cleared, so
@@ -281,7 +291,8 @@ the game treats it as unvalidated: open it in the editor and drive it to
 validate it. Without `--author`, the map keeps its base map's author and the
 game asks for coppers to edit it. In the app, the Map Editor's **Generate**
 menu does the same from a replay folder you choose, and opens the track for
-editing.
+editing; with no replay open, the Replay Viewer shows a loaded map file on
+its own in 3D.
 
 ## Testing
 
