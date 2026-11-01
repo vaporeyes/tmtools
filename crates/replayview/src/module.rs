@@ -1,5 +1,5 @@
 // ABOUTME: ReplayViewModule UI: picks the camera and draws the runs at the playhead, textured from the game assets when
-// ABOUTME: an export is set (wireframe cells and boxes otherwise), with a corner HUD of the focused run's speed and inputs.
+// ABOUTME: an export is set (wireframe otherwise), with a HUD of the focused run's speed and inputs; or a map file alone.
 
 use crate::camera::{Camera, Projector};
 use crate::gpu::{CarDraw, ColorVertex, DrawCallback, FrameRequest, FrameUniform, LineVertex, Renderer};
@@ -12,7 +12,7 @@ use glam::{Mat4, Quat, Vec3};
 use tmreplay::gap::{position_at, rotation_at, speed_at};
 use tmreplay::grid::BlockGrid;
 use tmreplay::track::Channel;
-use tmreplay::{format_race_time, Sample};
+use tmreplay::{format_race_time, ReplayMap, Sample};
 use tmtools_core::{setting, Module, RenderState, Session, Settings};
 
 // Car box in world units: half width (x), height (y), half length (z, forward)
@@ -140,7 +140,7 @@ impl Module for ReplayViewModule {
 
     fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, wgpu: Option<&RenderState>) {
         let Some(focus) = session.focus else {
-            ui.centered_and_justified(|ui| ui.label("Open a replay to watch it."));
+            self.map_only(ui, session, wgpu);
             return;
         };
 
@@ -197,7 +197,8 @@ impl Module for ReplayViewModule {
         };
 
         if let Some(rs) = wgpu.filter(|_| self.textured) {
-            if self.draw_textured(ui, rect, session, focus, &camera, rs) {
+            let map = session.replay(focus).map.clone();
+            if self.draw_textured(ui, rect, session, Shown { focus: Some(focus), map: &map }, &camera, rs) {
                 hud(&ui.painter_at(rect), rect, session, focus, now);
                 return;
             }
@@ -239,16 +240,53 @@ impl Module for ReplayViewModule {
 impl ReplayViewModule {
     /// Draws the runs with the game assets; false while the scene is loading or when there is no export, so the
     /// wireframe view is drawn instead
-    fn draw_textured(&mut self, ui: &mut egui::Ui, rect: Rect, session: &Session, focus: usize, camera: &Camera, rs: &RenderState) -> bool {
+    /// With no replay open, a loaded map file on its own from above: orbit to look around, wheel to zoom
+    fn map_only(&mut self, ui: &mut egui::Ui, session: &Session, wgpu: Option<&RenderState>) {
+        let map = session.files.iter().filter(|f| f.replay.is_err()).find_map(|f| tmreplay::parse_challenge(&f.bytes).ok());
+        let (Some(map), Some(rs)) = (map, wgpu.filter(|_| session.assets.is_some())) else {
+            ui.centered_and_justified(|ui| ui.label("Open a replay to watch it, or a map file with the game assets set to look at it."));
+            return;
+        };
+        let map = ReplayMap {
+            uid: Some(map.uid),
+            name: Some(map.name),
+            author: Some(map.author),
+            environment: Some(map.collection.clone()),
+            collection: Some(map.collection),
+            size: Some(map.size),
+            decoration: Some(map.decoration),
+            blocks: (!map.needs_unlimiter).then_some(map.blocks),
+        };
+        ui.label(egui::RichText::new("The map on its own: drag to turn, wheel to zoom").weak().small());
+        let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::drag());
+        if response.dragged() {
+            let d = response.drag_delta();
+            self.yaw += d.x * 0.008;
+            self.pitch = (self.pitch + d.y * 0.006).clamp(0.05, 1.45);
+        }
+        if response.hovered() {
+            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+            self.distance = (self.distance * (-scroll * 0.002).exp()).clamp(40.0, 4000.0);
+        }
+        let size = map.size.unwrap_or([32, 32, 32]);
+        let center = Vec3::new(size[0] as f32 * 16.0, 24.0, size[2] as f32 * 16.0);
+        let camera = Camera::orbit(center, self.yaw, self.pitch.max(0.3), self.distance.max(300.0));
+        if !self.draw_textured(ui, rect, session, Shown { focus: None, map: &map }, &camera, rs) {
+            ui.painter_at(rect).rect_filled(rect, 0.0, Color32::from_rgb(24, 30, 40));
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
+    fn draw_textured(&mut self, ui: &mut egui::Ui, rect: Rect, session: &Session, shown: Shown, camera: &Camera, rs: &RenderState) -> bool {
+        let Shown { focus, map } = shown;
         let Some(store) = session.assets.clone() else {
             self.status = None;
             return false;
         };
-        let runs: Vec<usize> = session.visible_runs().collect();
+        let runs: Vec<usize> = if focus.is_some() { session.visible_runs().collect() } else { Vec::new() };
         let mut vehicles: Vec<String> = runs.iter().map(|&r| vehicle_name(session, r)).collect();
         vehicles.sort();
         vehicles.dedup();
-        let map = &session.replay(focus).map;
         let key = scene_key(map, &vehicles);
 
         // Start loading when the map or the set of vehicles changes
@@ -288,17 +326,19 @@ impl ReplayViewModule {
                 let pose = Mat4::from_rotation_translation(q, p);
                 let wheels = tmscene::vehicle::wheel_state(samples, now);
                 let parts = model.part_matrices(wheels.as_ref()).into_iter().map(|m| pose * m).collect();
-                Some(CarDraw { vehicle, parts, ghost: self.ghosts && r != focus })
+                Some(CarDraw { vehicle, parts, ghost: self.ghosts && Some(r) != focus })
             })
             .collect();
         let ppp = ui.ctx().pixels_per_point();
         let mut overlay = Vec::new();
         let mut lines = Vec::new();
-        if self.show_lines {
-            racing_lines(session, &runs, focus, ppp, &mut lines);
-        }
-        if self.show_posts {
-            checkpoint_posts(session, focus, &mut overlay);
+        if let Some(focus) = focus {
+            if self.show_lines {
+                racing_lines(session, &runs, focus, ppp, &mut lines);
+            }
+            if self.show_posts {
+                checkpoint_posts(session, focus, &mut overlay);
+            }
         }
         let aspect = rect.width() / rect.height().max(1.0);
         let pixels = rect.size() * ppp;
@@ -320,6 +360,12 @@ impl ReplayViewModule {
         }
         true
     }
+}
+
+/// What the textured view shows: a map, and the run followed on it when there is one
+struct Shown<'a> {
+    focus: Option<usize>,
+    map: &'a ReplayMap,
 }
 
 /// Each visible run's path as a line a few pixels wide, lifted off the road; the focused run's is bolder
