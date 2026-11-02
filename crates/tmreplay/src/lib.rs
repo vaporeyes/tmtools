@@ -5,6 +5,7 @@ pub mod distance;
 pub mod export;
 pub mod gap;
 pub mod grid;
+pub mod pedals;
 pub mod report;
 pub mod sectors;
 mod inputs;

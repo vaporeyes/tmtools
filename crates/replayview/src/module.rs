@@ -11,6 +11,7 @@ use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use glam::{Mat4, Quat, Vec3};
 use tmreplay::gap::{position_at, rotation_at, speed_at};
 use tmreplay::grid::BlockGrid;
+use tmreplay::pedals::{pedal_stretches, Pedal};
 use tmreplay::track::Channel;
 use tmreplay::{format_race_time, ReplayMap, Sample};
 use tmtools_core::{setting, Module, RenderState, Session, Settings};
@@ -39,6 +40,8 @@ pub struct ReplayViewModule {
     distance: f32,
     show_blocks: bool,
     show_lines: bool,
+    /// Color the followed run's line by its pedals (gas, brake, coasting) instead of its run color
+    pedal_colors: bool,
     /// Posts at the focused run's checkpoints in the textured view
     show_posts: bool,
     /// Draw other runs' cars as gray see-through ghosts, and how opaque
@@ -70,6 +73,7 @@ impl Default for ReplayViewModule {
             distance: 40.0,
             show_blocks: true,
             show_lines: true,
+            pedal_colors: true,
             show_posts: true,
             ghosts: true,
             ghost_opacity: 0.5,
@@ -113,7 +117,7 @@ impl Module for ReplayViewModule {
             CameraMode::Overview => "overview",
         };
         s.insert("replayview.camera".into(), mode.into());
-        for (key, value) in [("blocks", self.show_blocks), ("lines", self.show_lines), ("posts", self.show_posts), ("textured", self.textured), ("ghosts", self.ghosts)] {
+        for (key, value) in [("blocks", self.show_blocks), ("lines", self.show_lines), ("pedals", self.pedal_colors), ("posts", self.show_posts), ("textured", self.textured), ("ghosts", self.ghosts)] {
             s.insert(format!("replayview.{key}"), value.to_string());
         }
         s.insert("replayview.ghost_opacity".into(), self.ghost_opacity.to_string());
@@ -132,6 +136,7 @@ impl Module for ReplayViewModule {
         let flag = |key: &str, current: bool| setting(s, &format!("replayview.{key}")).unwrap_or(current);
         self.show_blocks = flag("blocks", self.show_blocks);
         self.show_lines = flag("lines", self.show_lines);
+        self.pedal_colors = flag("pedals", self.pedal_colors);
         self.show_posts = flag("posts", self.show_posts);
         self.textured = flag("textured", self.textured);
         self.ghosts = flag("ghosts", self.ghosts);
@@ -158,6 +163,14 @@ impl Module for ReplayViewModule {
             }
             ui.checkbox(&mut self.show_blocks, "Blocks");
             ui.checkbox(&mut self.show_lines, "Racing lines");
+            if self.show_lines {
+                ui.checkbox(&mut self.pedal_colors, "Pedal colors").on_hover_text("Color the followed run's line by its pedals, exact to the tick");
+                if self.pedal_colors {
+                    for (pedal, label) in [(Pedal::Gas, "gas"), (Pedal::Brake, "brake"), (Pedal::Coast, "coast")] {
+                        ui.label(egui::RichText::new(label).small().color(pedal_color(pedal)));
+                    }
+                }
+            }
             if session.assets.is_some() && wgpu.is_some() && self.textured {
                 ui.checkbox(&mut self.show_posts, "Checkpoint posts");
                 ui.checkbox(&mut self.ghosts, "Ghost other cars").on_hover_text("Draw the cars of runs you aren't following gray and see-through");
@@ -213,6 +226,16 @@ impl Module for ReplayViewModule {
         let runs: Vec<usize> = session.visible_runs().collect();
         if self.show_lines {
             for &run in &runs {
+                if run == focus && self.pedal_colors {
+                    for (pedal, points) in pedal_stretches(&session.ghost(run).samples, session.runs[run].track.as_ref()) {
+                        for pair in points.windows(2) {
+                            if let Some(seg) = pr.segment(v3(pair[0]) + Vec3::Y * 0.2, v3(pair[1]) + Vec3::Y * 0.2) {
+                                painter.line_segment(seg, Stroke::new(2.5, pedal_color(pedal)));
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let (color, width) = if run == focus { (session.runs[run].color, 2.5) } else { (session.runs[run].color.gamma_multiply(0.6), 1.5) };
                 let points: Vec<Vec3> = session.ghost(run).samples.iter().map(|s| v3(s.position) + Vec3::Y * 0.2).collect();
                 for pair in points.windows(2) {
@@ -334,7 +357,7 @@ impl ReplayViewModule {
         let mut lines = Vec::new();
         if let Some(focus) = focus {
             if self.show_lines {
-                racing_lines(session, &runs, focus, ppp, &mut lines);
+                racing_lines(session, &runs, focus, self.pedal_colors, ppp, &mut lines);
             }
             if self.show_posts {
                 checkpoint_posts(session, focus, &mut overlay);
@@ -368,9 +391,29 @@ struct Shown<'a> {
     map: &'a ReplayMap,
 }
 
-/// Each visible run's path as a line a few pixels wide, lifted off the road; the focused run's is bolder
-fn racing_lines(session: &Session, runs: &[usize], focus: usize, pixels_per_point: f32, out: &mut Vec<LineVertex>) {
+/// Gas green, brake red, coasting white, as on the input trace
+fn pedal_color(pedal: Pedal) -> Color32 {
+    match pedal {
+        Pedal::Gas => Color32::from_rgb(63, 182, 122),
+        Pedal::Brake => Color32::from_rgb(229, 72, 77),
+        Pedal::Coast => Color32::from_rgb(235, 238, 242),
+    }
+}
+
+/// Each visible run's path as a line a few pixels wide, lifted off the road; the focused run's is bolder, and with
+/// pedal colors split by its pedals
+fn racing_lines(session: &Session, runs: &[usize], focus: usize, pedal_colors: bool, pixels_per_point: f32, out: &mut Vec<LineVertex>) {
+    let lift = |p: tmreplay::Vec3| Vec3::new(p.x, p.y + 0.15, p.z);
     for &run in runs {
+        if run == focus && pedal_colors {
+            for (pedal, points) in pedal_stretches(&session.ghost(run).samples, session.runs[run].track.as_ref()) {
+                let c = pedal_color(pedal);
+                let color = [c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0, 0.95];
+                let points: Vec<Vec3> = points.into_iter().map(lift).collect();
+                crate::overlay::screen_line(&points, 4.0 * pixels_per_point, color, out);
+            }
+            continue;
+        }
         let c = session.runs[run].color;
         let (alpha, width) = if run == focus { (0.9, 3.5) } else { (0.6, 2.0) };
         let color = [c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0, alpha];
