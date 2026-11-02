@@ -25,6 +25,38 @@ any tab moves all of them:
 - **Map Editor** - a top-down, level-by-level block editor for a map file or
   a replay's embedded map, saving a new map the game can load.
 
+## Screenshots
+
+The Replay Viewer in orbit, its racing line green on the gas and red under
+braking:
+
+![Replay Viewer](docs/screenshots/replay-viewer.png)
+
+The Input Analyzer's piano roll, with the next inputs coming up in the strip
+above it:
+
+![Input Analyzer](docs/screenshots/input-analyzer.png)
+
+Telemetry Graphs comparing two runs by distance:
+
+![Telemetry Graphs](docs/screenshots/telemetry.png)
+
+The Trajectory Map, both racing lines colored by speed:
+
+![Trajectory Map](docs/screenshots/trajectory-map.png)
+
+The Run Report's sectors, colored against the best of each:
+
+![Run Report](docs/screenshots/run-report.png)
+
+The Map Editor on a generated track:
+
+![Map Editor](docs/screenshots/map-editor.png)
+
+A generated track in 3D, with no replay loaded:
+
+![Generated track](docs/screenshots/generated-track.png)
+
 ## Workspace layout
 
 ```text
@@ -333,7 +365,18 @@ TMTOOLS_SCREENSHOT=/tmp/shot.png cargo run -p tmtools-app -- a.Replay.Gbx --tab 
 ```
 
 `TMTOOLS_SCREENSHOT_DELAY_MS` waits longer first, for example while a map
-loads.
+loads. `--time MS` seeks the playback clock, `--focus N` picks the focused
+run, and `--set module.setting=value` overrides one module setting for the
+run, for example:
+
+```bash
+TMTOOLS_SCREENSHOT=docs/screenshots/replay-viewer.png TMTOOLS_SCREENSHOT_DELAY_MS=9000 \
+  cargo run -p tmtools-app -- a.Replay.Gbx --tab "replay viewer" --time 7450 \
+  --set replayview.camera=orbit
+```
+
+The images in `docs/screenshots` were taken this way and resized with
+`sips -Z 1600`.
 
 ## Known limitations
 

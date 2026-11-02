@@ -9,7 +9,7 @@ use eframe::egui;
 use std::path::PathBuf;
 use tmreplay::format_race_time;
 use tmtools_core::theme::{self, FINISH, INK, INK_RAISED, INK_SOFT, TEXT, WEAK};
-use tmtools_core::{color_swatch, icon_button, section, Icon, Module, SavedSession, Session, SPEEDS};
+use tmtools_core::{color_swatch, icon_button, section, Icon, Module, SavedSession, Session, Settings, SPEEDS};
 
 // Where the chosen asset folder and the last session are remembered between launches
 const ASSETS_KEY: &str = "assets_dir";
@@ -293,11 +293,12 @@ fn timeline(ui: &mut egui::Ui, session: &mut Session, duration: f64) {
     }
 }
 
-/// What the command line asks for: replay or Gbx paths, plus --tab NAME, --time MS, --focus N, --assets DIR, and
-/// --library (open the replay library window)
+/// What the command line asks for: replay or Gbx paths, plus --tab NAME, --time MS, --focus N, --assets DIR,
+/// --library (open the replay library window), and --set module.setting=value (a module setting, as saved)
 #[derive(Default)]
 struct Args {
     paths: Vec<PathBuf>,
+    settings: Settings,
     tab: Option<String>,
     time: Option<f64>,
     focus: Option<usize>,
@@ -315,6 +316,11 @@ fn parse_args() -> Args {
             "--focus" => parsed.focus = args.next().and_then(|f| f.parse::<usize>().ok()),
             "--assets" => parsed.assets = args.next().map(PathBuf::from),
             "--library" => parsed.library = true,
+            "--set" => {
+                if let Some((key, value)) = args.next().as_deref().and_then(|kv| kv.split_once('=')) {
+                    parsed.settings.insert(key.to_owned(), value.to_owned());
+                }
+            }
             path => parsed.paths.push(PathBuf::from(path)),
         }
     }
@@ -323,10 +329,15 @@ fn parse_args() -> Args {
 
 /// The last session first, then the command line, which wins: files given there replace the remembered ones
 fn start_session(app: &mut TmtoolsApp, saved: Option<SavedSession>, args: Args) {
-    if let Some(saved) = &saved {
+    // Module settings: the saved ones with the command line's on top
+    if saved.is_some() || !args.settings.is_empty() {
+        let mut settings = saved.as_ref().map(|s| s.settings.clone()).unwrap_or_default();
+        settings.extend(args.settings.clone());
         for m in &mut app.modules {
-            m.load_settings(&saved.settings);
+            m.load_settings(&settings);
         }
+    }
+    if let Some(saved) = &saved {
         app.active = saved.active_tab.min(app.modules.len().saturating_sub(1));
         if let Some(url) = saved.settings.get("shell.library_url") {
             app.library.url = url.clone();
