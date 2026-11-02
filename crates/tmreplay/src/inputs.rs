@@ -1,4 +1,4 @@
-// ABOUTME: Decodes a recorded input event (name and raw 32-bit data) into an Input.
+// ABOUTME: Decodes recorded input events (name and raw 32-bit data) into Inputs, and TM2020's per-tick input bit stream.
 // ABOUTME: Port of GBX.NET's Input.Parse; names match its input types (Accelerate, Steer, FakeIsRaceRunning, ...).
 
 use crate::model::{Input, InputValue};
@@ -40,6 +40,81 @@ pub fn parse_input(time_ms: i32, name: &str, data: u32) -> Input {
         Some(value) => Input { time_ms, name: name.into(), value: InputValue::Analog(value) },
         None => Input { time_ms, name: "UnknownInput".into(), value: InputValue::None },
     }
+}
+
+/// Reads bits least significant first, as TM2020's input stream stores them; past the end reads zeros
+struct BitReader<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl BitReader<'_> {
+    fn bit(&mut self) -> bool {
+        let bit = self.data.get(self.pos / 8).is_some_and(|b| b & (1 << (self.pos % 8)) != 0);
+        self.pos += 1;
+        bit
+    }
+
+    fn number(&mut self, bits: u32) -> u64 {
+        (0..bits).fold(0, |n, i| n | (self.bit() as u64) << i)
+    }
+}
+
+/// TM2020 player inputs (ghost chunk 0x0309201D): a bit stream with one entry per 10 ms tick, each saying what
+/// changed. Port of GBX.NET's ProcessTrackmaniaInputs for a car; `version` is the input data's (11 or 12) and
+/// `start_ms` the time of the first tick.
+pub fn read_tm2020_inputs(data: &[u8], ticks: usize, version: i32, start_ms: i32) -> Vec<Input> {
+    let mut r = BitReader { data, pos: 0 };
+    let mut inputs = Vec::new();
+    let mut in_vehicle = false;
+    let (mut steer, mut accel, mut brake, mut horn) = (0i8, false, false, false);
+    let press = |inputs: &mut Vec<Input>, time_ms: i32, name: &str, pressed: bool| {
+        inputs.push(Input { time_ms, name: name.into(), value: InputValue::Pressed(pressed) });
+    };
+    for tick in 0..ticks {
+        let time_ms = start_ms + tick as i32 * 10;
+        if !r.bit() {
+            let horn_bit = if r.bit() {
+                // Only the two low state bits follow
+                r.number(2) & 2 != 0
+            } else {
+                let states = r.number(if version == 11 { 33 } else { 34 });
+                // 2 to 4: driving a car; 1 and others: on foot
+                in_vehicle = matches!(states & 0xF, 2..=4);
+                // The countdown's start is recorded as a respawn too
+                if (states >> 31) & 1 != 0 && time_ms >= 0 {
+                    press(&mut inputs, time_ms, "Respawn", true);
+                }
+                if (states >> 33) & 1 != 0 {
+                    press(&mut inputs, time_ms, "SecondaryRespawn", true);
+                }
+                states & (1 << 6) != 0
+            };
+            if in_vehicle && horn_bit != horn {
+                horn = horn_bit;
+                press(&mut inputs, time_ms, "Horn", horn);
+            }
+        }
+        // Mouse movement
+        if !r.bit() {
+            r.number(32);
+        }
+        if in_vehicle && !r.bit() {
+            let value = r.number(8) as u8 as i8;
+            if value != steer {
+                steer = value;
+                inputs.push(Input { time_ms, name: "Steer".into(), value: InputValue::Analog(steer as i32 * 65536 / 127) });
+            }
+            for (name, held) in [("Accelerate", &mut accel), ("Brake", &mut brake)] {
+                let bit = r.bit();
+                if bit != *held {
+                    *held = bit;
+                    press(&mut inputs, time_ms, name, bit);
+                }
+            }
+        }
+    }
+    inputs
 }
 
 #[cfg(test)]

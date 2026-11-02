@@ -88,7 +88,11 @@ impl Default for ReplayViewModule {
 }
 
 fn vehicle_name(session: &Session, run: usize) -> String {
-    session.ghost(run).vehicle.clone().unwrap_or_else(|| DEFAULT_VEHICLE.to_owned())
+    match session.ghost(run).vehicle.as_deref() {
+        // TM2020's Stadium car has no model in the TMF export; TMF's stands in
+        None | Some("CarSport") => DEFAULT_VEHICLE.to_owned(),
+        Some(name) => name.to_owned(),
+    }
 }
 
 fn v3(v: tmreplay::Vec3) -> Vec3 {

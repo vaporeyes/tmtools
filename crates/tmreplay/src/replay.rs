@@ -1,7 +1,8 @@
-// ABOUTME: Reads TMF, TM2, and Nations ESWC replays and maps (CGameCtnReplayRecord, CGameCtnChallenge): ghosts, inputs,
-// ABOUTME: samples, and blocks. Ported from gbx-tools-3d-node's parseReplay.ts; the same readers drive the inspector's walk.
+// ABOUTME: Reads TMF, TM2, TM2020, and Nations ESWC replays, ghost files, and maps (CGameCtnReplayRecord, CGameCtnGhost,
+// ABOUTME: CGameCtnChallenge): ghosts, inputs, samples, and blocks. Ported from gbx-tools-3d-node's parseReplay.ts; the same readers drive the inspector's walk.
 
-use crate::inputs::parse_input;
+use crate::entrecord::read_ent_record;
+use crate::inputs::{parse_input, read_tm2020_inputs};
 use crate::model::{Checkpoint, Ghost, Input, MapBlock, Replay, ReplayMap};
 use crate::samples::{read_old_sample_data, read_sample_data};
 use gbx::{format_err, read_chunks, ChunkSpan, Flow, GbxFile, Ident, Reader, Result};
@@ -14,8 +15,13 @@ const CHALLENGE_PARAMETERS: u32 = 0x0305_B000;
 const BLOCK_SKIN: u32 = 0x0305_9000;
 const WAYPOINT_PROPERTY: u32 = 0x2E00_9000;
 
+/// Reads a replay, or a ghost file (TM2020's .Ghost.Gbx) as a replay of one ghost with no map
 pub fn parse_replay(bytes: &[u8]) -> Result<Replay> {
     let file = GbxFile::parse(bytes)?;
+    if file.class_id == GHOST {
+        let ghost = read_ghost(GHOST, &mut file.body_reader())?;
+        return Ok(Replay { map: ReplayMap::default(), ghosts: vec![ghost], embedded_map: None });
+    }
     if file.class_id != REPLAY_RECORD {
         return format_err("not a replay");
     }
@@ -141,6 +147,7 @@ fn read_ghost(class_id: u32, r: &mut Reader) -> Result<Ghost> {
             }
             // ManiaPlanet (TM2) appearance: read for its IDs, which start the lookback table later chunks refer to, and
             // for the car and nickname. A badge's layout isn't known, so a ghost with one keeps the nickname from elsewhere.
+            // TM2020 adds the recording (CPlugEntRecordData) after it.
             0x0309_2000 => {
                 let version = c.i32()?;
                 let appearance_version = if version >= 9 { c.i32()? } else { 0 };
@@ -155,6 +162,15 @@ fn read_ghost(class_id: u32, r: &mut Reader) -> Result<Ghost> {
                         c.string()?;
                     }
                     ghost.nickname = Some(c.string()?);
+                    if version >= 5 {
+                        c.string()?; // avatar
+                        c.string()?; // recording context
+                        c.i32()?;
+                        if let Some(samples) = c.node_ref(read_ent_record)? {
+                            ghost.samples = (*samples).clone();
+                            ghost.sample_period_ms = samples.windows(2).next().map(|w| w[1].time_ms - w[0].time_ms);
+                        }
+                    }
                 }
             }
             0x0309_2005 => ghost.race_time_ms = c.time_nullable()?,
@@ -211,6 +227,21 @@ fn read_ghost(class_id: u32, r: &mut Reader) -> Result<Ghost> {
             0x0309_2011 => ghost.inputs = read_validation(c, false)?,
             // ManiaPlanet (TM2): a 256-bit security key
             0x0309_201C => c.skip(32)?,
+            // TM2020 inputs: the first player's bit stream
+            0x0309_201D => {
+                let chunk_version = c.i32()?;
+                let players = c.count()?;
+                for i in 0..players {
+                    let version = c.i32()?;
+                    c.i32()?; // start time
+                    let offset = if chunk_version >= 4 { c.time_nullable()? } else { None };
+                    let ticks = c.count()?;
+                    let data = c.data()?;
+                    if i == 0 && version >= 11 {
+                        ghost.inputs = read_tm2020_inputs(data, ticks, version, offset.unwrap_or(0));
+                    }
+                }
+            }
             // ManiaPlanet (TM2) validation: TMUF's layout, then (when there are inputs) the steering wheel sensitivity flag
             0x0309_2025 => {
                 if c.i32()? == 0 {

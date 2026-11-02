@@ -58,6 +58,8 @@ impl SceneLoad {
 fn load(store: &AssetStore, map: &ReplayMap, vehicles: &[String], key: String) -> LoadedScene {
     let (map_scene, mut error) = match build_map(store, map) {
         Ok(Some(scene)) => (Some(scene), None),
+        // A ghost file names no map at all
+        Ok(None) if map.uid.is_none() => (None, Some("This file has no map, so only the run is shown.".to_owned())),
         Ok(None) => (None, Some("This replay's map couldn't be read, so only the run is shown.".to_owned())),
         Err(e) => (None, Some(format!("The map couldn't be built: {e}"))),
     };

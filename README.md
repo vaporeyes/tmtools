@@ -381,10 +381,13 @@ The images in `docs/screenshots` were taken this way and resized with
 ## Known limitations
 
 - Binary Gbx files from TrackMania Forever, TrackMania 2 (ManiaPlanet), and
-  earlier are read; TM2020 replays are not supported. Older replays (Nations
-  ESWC) are read from their own ghost and input chunks; one that has a
-  MediaTracker clip opens without inputs, as the clip comes before them and
-  can't be stepped over.
+  earlier are read. Older replays (Nations ESWC) are read from their own
+  ghost and input chunks; one that has a MediaTracker clip opens without
+  inputs, as the clip comes before them and can't be stepped over.
+- TM2020 ghost files (`.Ghost.Gbx`) are read for the car's recorded states
+  and inputs, but carry no map, so the run is shown without blocks. TMF's
+  Stadium car stands in for TM2020's in the Replay Viewer. The state stores
+  RPM in one byte, read as hundreds of RPM.
 - TM2 Stadium maps are drawn with TMF's blocks, lowered to TMF's floor;
   blocks TM2 added have no mesh in the export and are skipped. The Map
   Editor writes TM2 maps back but can't add new block types to them.

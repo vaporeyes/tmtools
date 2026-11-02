@@ -8,6 +8,7 @@ pub mod grid;
 pub mod pedals;
 pub mod report;
 pub mod sectors;
+mod entrecord;
 mod inputs;
 mod model;
 mod replay;

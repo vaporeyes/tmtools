@@ -195,7 +195,7 @@ fn read_car(data: &[u8], version: i32) -> Result<RawCar> {
 }
 
 /// A packed vector: 16-bit log magnitude, then heading and pitch bytes
-fn packed_vec3(packed: u32) -> Vec3 {
+pub(crate) fn packed_vec3(packed: u32) -> Vec3 {
     let mag16 = packed as u16 as i16;
     let heading = (packed >> 16) as u8 as i8;
     let pitch = (packed >> 24) as u8 as i8;
@@ -207,7 +207,7 @@ fn packed_vec3(packed: u32) -> Vec3 {
     Vec3 { x: axis_heading.cos() * cos_pitch * mag, y: axis_heading.sin() * cos_pitch * mag, z: axis_pitch.sin() * mag }
 }
 
-fn wheel_mask(fl: bool, fr: bool, rr: bool, rl: bool) -> u8 {
+pub(crate) fn wheel_mask(fl: bool, fr: bool, rr: bool, rl: bool) -> u8 {
     fl as u8 | (fr as u8) << 1 | (rr as u8) << 2 | (rl as u8) << 3
 }
 
