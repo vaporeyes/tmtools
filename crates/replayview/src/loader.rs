@@ -1,11 +1,11 @@
 // ABOUTME: Builds a map's scene and the cars' meshes on a background thread, decoding every texture they use, so the
 // ABOUTME: UI keeps running while a map loads; the result is picked up once and uploaded to the GPU.
 
+use crate::gpu::MipChain;
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 use tmassets::material::MaterialSpec;
-use tmassets::texture::Texture;
 use tmassets::{AssetStore, Vehicle};
 use tmreplay::ReplayMap;
 use tmscene::scene::{build_map, vehicle_model, MapScene, Surface};
@@ -17,7 +17,8 @@ pub struct LoadedScene {
     pub map: Option<MapScene>,
     pub vehicles: HashMap<String, Arc<VehicleModel>>,
     pub vehicle_info: HashMap<String, Vehicle>,
-    pub textures: HashMap<String, Arc<Texture>>,
+    /// Textures flipped and mipmapped here, so the upload only copies them
+    pub textures: HashMap<String, Arc<MipChain>>,
     /// Why the map couldn't be built, when it couldn't
     pub error: Option<String>,
 }
@@ -84,7 +85,7 @@ fn load(store: &AssetStore, map: &ReplayMap, vehicles: &[String], key: String) -
             for path in [&slots.diffuse, &slots.normal, &slots.specular, &slots.blend2, &slots.blend_intensity, &slots.blend3].into_iter().flatten() {
                 if !textures.contains_key(path) {
                     if let Ok(Some(t)) = store.texture(path) {
-                        textures.insert(path.clone(), t);
+                        textures.insert(path.clone(), Arc::new(MipChain::new(&t)));
                     }
                 }
             }

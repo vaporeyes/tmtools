@@ -257,7 +257,7 @@ impl Renderer {
         let line_buffer = wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<LineVertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes: &line_attributes };
         let line = simple_pipeline(device, &shader, &frame_only, "vs_screen_line", "fs_line", &[Some(line_buffer)], wgpu::PrimitiveTopology::TriangleList, Some(wgpu::BlendState::ALPHA_BLENDING), true);
 
-        let white = upload_texture(device, queue, &Texture { width: 1, height: 1, rgba: vec![255; 4] }, true);
+        let white = upload_texture(device, queue, &MipChain::new(&Texture { width: 1, height: 1, rgba: vec![255; 4] }), true);
         Self {
             frame_buffer,
             frame_group,
@@ -337,18 +337,23 @@ impl Renderer {
         self.request = Some(request);
     }
 
-    fn texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, textures: &HashMap<String, Arc<Texture>>, path: Option<&String>, srgb: bool) -> Option<Arc<wgpu::TextureView>> {
+    fn texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, textures: &HashMap<String, Arc<MipChain>>, path: Option<&String>, srgb: bool) -> Option<Arc<wgpu::TextureView>> {
         let path = path?;
         if let Some(view) = self.textures.get(&(path.clone(), srgb)) {
             return Some(view.clone());
         }
-        let view = Arc::new(upload_texture(device, queue, textures.get(path)?, srgb));
+        let chain = textures.get(path)?;
+        // Larger than this GPU can hold: the material falls back to its untextured look rather than failing validation
+        if chain.width.max(chain.height) > device.limits().max_texture_dimension_2d {
+            return None;
+        }
+        let view = Arc::new(upload_texture(device, queue, chain, srgb));
         self.textures.insert((path.clone(), srgb), view.clone());
         Some(view)
     }
 
     /// Uploads one part; `vehicle_part` is its index in a vehicle's parts, whose instances are rewritten every frame
-    fn upload_part(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, part: &DrawPart, textures: &HashMap<String, Arc<Texture>>, night: bool, vehicle_part: Option<usize>) -> Option<GpuPart> {
+    fn upload_part(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, part: &DrawPart, textures: &HashMap<String, Arc<MipChain>>, night: bool, vehicle_part: Option<usize>) -> Option<GpuPart> {
         let (pass, double_sided, uniform, slots) = match &part.surface {
             Surface::Invisible => return None,
             Surface::Glass => (Pass::Blend, false, MaterialUniform { color: [1.0; 4], flags: FIXED_OPACITY, opacity: 0.35, pad: [0.0; 2] }, None),
@@ -707,30 +712,52 @@ fn downsample(rgba: &[u8], w: u32, h: u32) -> (Vec<u8>, u32, u32) {
     (out, nw, nh)
 }
 
-fn upload_texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Texture, srgb: bool) -> wgpu::TextureView {
-    let levels = 32 - image.width.max(image.height).max(1).leading_zeros();
+/// A texture flipped and mipmapped, ready to upload: every level's pixels, largest first
+pub struct MipChain {
+    pub width: u32,
+    pub height: u32,
+    pub levels: Vec<Vec<u8>>,
+}
+
+impl MipChain {
+    /// The CPU work of uploading a texture, done ahead so it can run off the render thread
+    pub fn new(image: &Texture) -> Self {
+        let count = 32 - image.width.max(image.height).max(1).leading_zeros();
+        // three.js flips images vertically on upload (its default flipY), and the export's UVs expect that
+        let (mut data, mut w, mut h) = (flip_rows(&image.rgba, image.width, image.height), image.width, image.height);
+        let mut levels = Vec::with_capacity(count as usize);
+        for level in 0..count {
+            if level + 1 < count {
+                let (next, nw, nh) = downsample(&data, w, h);
+                levels.push(std::mem::replace(&mut data, next));
+                (w, h) = (nw, nh);
+            } else {
+                levels.push(std::mem::take(&mut data));
+            }
+        }
+        Self { width: image.width, height: image.height, levels }
+    }
+}
+
+fn upload_texture(device: &wgpu::Device, queue: &wgpu::Queue, chain: &MipChain, srgb: bool) -> wgpu::TextureView {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("asset texture"),
-        size: wgpu::Extent3d { width: image.width, height: image.height, depth_or_array_layers: 1 },
-        mip_level_count: levels,
+        size: wgpu::Extent3d { width: chain.width, height: chain.height, depth_or_array_layers: 1 },
+        mip_level_count: chain.levels.len() as u32,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: if srgb { wgpu::TextureFormat::Rgba8UnormSrgb } else { wgpu::TextureFormat::Rgba8Unorm },
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    // three.js flips images vertically on upload (its default flipY), and the export's UVs expect that
-    let (mut data, mut w, mut h) = (flip_rows(&image.rgba, image.width, image.height), image.width, image.height);
-    for level in 0..levels {
+    for (level, data) in chain.levels.iter().enumerate() {
+        let (w, h) = ((chain.width >> level).max(1), (chain.height >> level).max(1));
         queue.write_texture(
-            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: level, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            &data,
+            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: level as u32, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            data,
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
-        if level + 1 < levels {
-            (data, w, h) = downsample(&data, w, h);
-        }
     }
     texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
@@ -774,6 +801,16 @@ mod tests {
     fn flips_images_upside_down() {
         let rgba = [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4];
         assert_eq!(flip_rows(&rgba, 2, 2), [3, 3, 3, 3, 4, 4, 4, 4, 1, 1, 1, 1, 2, 2, 2, 2]);
+    }
+
+    #[test]
+    fn mip_chains_hold_every_level_flipped() {
+        // 4x2: the top row is 1s, the bottom row 2s; levels 4x2, 2x1, 1x1
+        let rgba: Vec<u8> = [1u8, 2].iter().flat_map(|&v| [v; 16]).collect();
+        let chain = MipChain::new(&Texture { width: 4, height: 2, rgba });
+        assert_eq!(chain.levels.iter().map(Vec::len).collect::<Vec<_>>(), [32, 8, 4]);
+        assert_eq!(&chain.levels[0][..4], [2, 2, 2, 2]);
+        assert_eq!(MipChain::new(&Texture { width: 1, height: 1, rgba: vec![9; 4] }).levels, [vec![9; 4]]);
     }
 
     #[test]

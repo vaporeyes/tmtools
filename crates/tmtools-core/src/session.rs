@@ -4,6 +4,7 @@
 use egui::Color32;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 use tmassets::AssetStore;
 use tmreplay::track::{InputTrack, TICK_MS};
@@ -33,6 +34,19 @@ pub struct LoadedFile {
 }
 
 impl LoadedFile {
+    /// Parses a file's bytes; the slow part of opening a file, so it can run on any thread
+    pub fn parse(name: String, bytes: Vec<u8>, path: Option<PathBuf>) -> Self {
+        let replay = parse_replay(&bytes).map_err(|e| e.to_string());
+        Self { path, name, bytes: Arc::new(bytes), replay }
+    }
+
+    /// Reads and parses a file from disk
+    pub fn read(path: &Path) -> Result<Self, String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("Couldn't read {}: {e}", path.display()))?;
+        let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        Ok(Self::parse(name, bytes, Some(path.to_path_buf())))
+    }
+
     /// What to call the file: its map's name without formatting codes, else the file name
     pub fn title(&self) -> String {
         self.replay
@@ -76,6 +90,8 @@ pub struct Session {
     /// Sector split points placed on each map, by map_key
     pub splits: HashMap<String, Vec<Vec3>>,
     next_color: usize,
+    /// Files being read and parsed on background threads, in the order they were opened
+    loading: Vec<Receiver<Result<LoadedFile, String>>>,
 }
 
 impl Default for Session {
@@ -89,25 +105,59 @@ impl Default for Session {
             assets: None,
             splits: HashMap::new(),
             next_color: 0,
+            loading: Vec::new(),
         }
     }
 }
 
 impl Session {
+    /// Reads and parses a file before returning; for startup, where what follows needs the file in place
     pub fn load_path(&mut self, path: &Path) {
-        match std::fs::read(path) {
-            Ok(bytes) => {
-                let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-                self.load_bytes(name, bytes, Some(path.to_path_buf()));
-            }
-            Err(e) => self.status = Some(format!("Couldn't read {}: {e}", path.display())),
+        match LoadedFile::read(path) {
+            Ok(file) => self.add_file(file),
+            Err(e) => self.status = Some(e),
         }
+    }
+
+    /// Reads and parses a file on a background thread, so a large one doesn't stop the window; it joins the
+    /// session in `poll_loads`
+    pub fn load_path_in_background(&mut self, path: PathBuf) {
+        let (sender, receiver) = channel();
+        std::thread::spawn(move || {
+            // The receiver is gone only if the session was dropped; nothing to do then
+            let _ = sender.send(LoadedFile::read(&path));
+        });
+        self.loading.push(receiver);
+        self.status = Some(format!("Loading {} file{}...", self.loading.len(), if self.loading.len() == 1 { "" } else { "s" }));
+    }
+
+    /// Adds the files whose background load finished, keeping the order they were opened in; true while any are
+    /// still loading
+    pub fn poll_loads(&mut self) -> bool {
+        while let Some(first) = self.loading.first() {
+            let result = match first.try_recv() {
+                Ok(result) => result,
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => Err("A file couldn't be loaded".to_owned()),
+            };
+            self.loading.remove(0);
+            match result {
+                Ok(file) => self.add_file(file),
+                Err(e) => self.status = Some(e),
+            }
+        }
+        !self.loading.is_empty()
     }
 
     /// Adds a file; replays add their ghosts as runs, and the first run loaded becomes the focus
     pub fn load_bytes(&mut self, name: String, bytes: Vec<u8>, path: Option<PathBuf>) {
-        let replay = parse_replay(&bytes).map_err(|e| e.to_string());
-        self.status = Some(match &replay {
+        self.add_file(LoadedFile::parse(name, bytes, path));
+    }
+
+    /// Adds a parsed file; replays add their ghosts as runs, and the first run loaded becomes the focus
+    pub fn add_file(&mut self, loaded: LoadedFile) {
+        let name = &loaded.name;
+        self.status = Some(match &loaded.replay {
             Ok(r) => {
                 let map = r.map.name.as_deref().map(tmreplay::strip_formatting).unwrap_or_else(|| name.clone());
                 format!("Loaded {}: {} ghost{}", map.trim(), r.ghosts.len(), if r.ghosts.len() == 1 { "" } else { "s" })
@@ -115,7 +165,7 @@ impl Session {
             Err(e) => format!("{name} isn't a replay ({e}); it can still be inspected"),
         });
         let file = self.files.len();
-        if let Ok(replay) = &replay {
+        if let Ok(replay) = &loaded.replay {
             for (ghost, g) in replay.ghosts.iter().enumerate() {
                 let color = PALETTE[self.next_color % PALETTE.len()];
                 self.next_color += 1;
@@ -123,7 +173,7 @@ impl Session {
                 self.runs.push(Run { file, ghost, label: run_label(g), color, visible: true, track });
             }
         }
-        self.files.push(LoadedFile { path, name, bytes: Arc::new(bytes), replay });
+        self.files.push(loaded);
         if self.focus.is_none() && !self.runs.is_empty() {
             self.focus = Some(0);
         }
@@ -249,6 +299,23 @@ mod tests {
         }
         s.focus = Some(0);
         s
+    }
+
+    #[test]
+    fn background_loads_join_in_the_order_they_were_opened() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tmreplay/tests/fixtures/tm2020.Ghost.Gbx");
+        let mut s = Session::default();
+        s.load_path_in_background(fixture.clone());
+        s.load_path_in_background(PathBuf::from("/nonexistent/missing.Replay.Gbx"));
+        s.load_path_in_background(fixture);
+        let started = std::time::Instant::now();
+        while s.poll_loads() {
+            assert!(started.elapsed().as_secs() < 30, "background loads never finished");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(s.files.len(), 2);
+        assert_eq!(s.runs.iter().map(|r| r.file).collect::<Vec<_>>(), [0, 1]);
+        assert_eq!(s.focus, Some(0));
     }
 
     #[test]

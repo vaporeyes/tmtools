@@ -168,8 +168,8 @@ impl LibraryWindow {
                     self.entries = entries;
                 }
                 Reply::File(Ok(path)) => {
-                    session.load_path(&path);
-                    self.status = session.status.clone();
+                    session.load_path_in_background(path);
+                    self.status = Some("Downloaded; loading...".into());
                 }
                 Reply::List(Err(e)) | Reply::File(Err(e)) => self.status = Some(e),
             }

@@ -31,6 +31,9 @@ impl eframe::App for TmtoolsApp {
         if self.session.playback.playing {
             ctx.request_repaint();
         }
+        if self.session.poll_loads() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
         self.handle_dropped_files(&ctx);
         self.handle_keys(&ctx);
 
@@ -100,7 +103,7 @@ impl TmtoolsApp {
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
         for path in dropped {
-            self.session.load_path(&path);
+            self.session.load_path_in_background(path);
         }
     }
 
@@ -137,7 +140,7 @@ fn runs_panel(ui: &mut egui::Ui, session: &mut Session) -> bool {
             if ui.button("Open...").on_hover_text("Open replays or any Gbx file; you can also drop files on the window").clicked() {
                 if let Some(paths) = rfd::FileDialog::new().add_filter("Gbx", &["gbx", "Gbx", "GBX"]).pick_files() {
                     for path in paths {
-                        session.load_path(&path);
+                        session.load_path_in_background(path);
                     }
                 }
             }
