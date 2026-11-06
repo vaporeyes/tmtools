@@ -288,9 +288,10 @@ fn read_inputs(r: &mut Reader) -> Result<Option<Vec<Input>>> {
     let names = (0..name_count).map(|_| r.id_as_string()).collect::<Result<Vec<_>>>()?;
     let count = r.count()?;
     r.i32()?; // count limit
-    let mut inputs = Vec::with_capacity(count);
+    // Each input takes 9 bytes
+    let mut inputs = Vec::with_capacity(count.min(r.remaining() / 9));
     for _ in 0..count {
-        let time = r.i32()? - 100_000;
+        let Some(time) = r.i32()?.checked_sub(100_000) else { return format_err("input time overflows") };
         let name = names.get(r.u8()? as usize).map_or("", String::as_str);
         inputs.push(parse_input(time, name, r.u32()?));
     }
@@ -595,6 +596,17 @@ pub fn trace_body(file: &GbxFile) -> BodyTrace {
 mod tests {
     use super::*;
     use gbx::Writer;
+
+    #[test]
+    fn input_times_that_overflow_are_an_error() {
+        let mut w = Writer::new();
+        for v in [1, 0, 0, 1, 0, i32::MIN] {
+            w.i32(v); // events duration, 0, no names, one input, count limit, its time
+        }
+        w.raw(&[0]);
+        w.u32(1);
+        assert!(read_inputs(&mut Reader::new(&w.bytes)).is_err());
+    }
 
     /// A Nations ESWC replay body: ghosts in 0x03093004 with old-style samples and player info, a null clip, then
     /// the inputs in 0x0309300D

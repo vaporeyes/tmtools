@@ -55,6 +55,10 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
+    fn remaining(&self) -> usize {
+        self.bytes.len() - self.pos
+    }
+
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
         if n > self.bytes.len() - self.pos {
             return format_err(format!("mesh data ends early: wanted {n} bytes at {}", self.pos));
@@ -133,14 +137,21 @@ pub fn decode_solid(data: &[u8]) -> Result<Solid> {
         r.take(8)?; // file write time
     }
     let file_path = if version >= 1 { Some(r.string()?) } else { None };
-    let root = read_node(&mut r, version)?;
+    let root = read_node(&mut r, version, 0)?;
     if r.pos != body.len() {
         return format_err(format!("{} bytes left after the mesh tree; the format was misread", body.len() - r.pos));
     }
     Ok(Solid { version, lod: (lod != 255).then_some(lod), file_path, root })
 }
 
-fn read_node(r: &mut Reader, version: u32) -> Result<SolidNode> {
+/// How deep nodes may nest through children and LODs; real meshes nest a few levels, and the limit keeps malformed
+/// ones from exhausting the stack
+const MAX_NODE_DEPTH: u32 = 64;
+
+fn read_node(r: &mut Reader, version: u32, depth: u32) -> Result<SolidNode> {
+    if depth > MAX_NODE_DEPTH {
+        return format_err("mesh nodes nest too deeply");
+    }
     let children_count = r.count()?;
     let rotation = if r.bool()? {
         let mut m = [0.0; 9];
@@ -155,10 +166,11 @@ fn read_node(r: &mut Reader, version: u32) -> Result<SolidNode> {
     let visual = read_visual(r)?;
 
     let lod_count = r.count()?;
-    let mut lods = Vec::with_capacity(lod_count);
+    // Each LOD takes at least its 4-byte distance
+    let mut lods = Vec::with_capacity(lod_count.min(r.remaining() / 4));
     for _ in 0..lod_count {
         let distance = r.f32()?;
-        lods.push((distance, read_node(r, version)?));
+        lods.push((distance, read_node(r, version, depth + 1)?));
     }
 
     skip_surface(r)?;
@@ -166,9 +178,12 @@ fn read_node(r: &mut Reader, version: u32) -> Result<SolidNode> {
         skip_light(r)?;
     }
     let name = r.string()?;
-    let children = (0..children_count).map(|_| read_node(r, version)).collect::<Result<_>>()?;
+    let children = (0..children_count).map(|_| read_node(r, version, depth + 1)).collect::<Result<_>>()?;
     Ok(SolidNode { name, rotation, position, visual, lods, children })
 }
+
+/// TMF visuals have one to three UV sets
+const MAX_UV_SETS: usize = 16;
 
 fn read_visual(r: &mut Reader) -> Result<Option<Visual>> {
     if !r.bool()? {
@@ -177,6 +192,10 @@ fn read_visual(r: &mut Reader) -> Result<Option<Visual>> {
     let has_normals = r.bool()?;
     let vertex_count = r.count()?;
     let uv_set_count = r.count()?;
+    // A visual with no vertices reads nothing per UV set, so the count alone would bound the loop
+    if uv_set_count > MAX_UV_SETS {
+        return format_err(format!("{uv_set_count} UV sets"));
+    }
     let mut uv_sets = Vec::with_capacity(uv_set_count);
     for _ in 0..uv_set_count {
         uv_sets.push((0..vertex_count).map(|_| Ok([r.f32()?, r.f32()?])).collect::<Result<Vec<_>>>()?);
@@ -187,6 +206,10 @@ fn read_visual(r: &mut Reader) -> Result<Option<Visual>> {
     let index_count = r.count()?;
     let size = r.u8()?;
     let indices = (0..index_count).map(|_| r.uint(size)).collect::<Result<Vec<_>>>()?;
+    // Normals and drawing index into the vertices, so every index must name one
+    if let Some(&bad) = indices.iter().find(|&&i| i as usize >= vertex_count) {
+        return format_err(format!("index {bad} is past the {vertex_count} vertices"));
+    }
 
     let material_name = r.string()?;
     if r.bool()? {
@@ -288,6 +311,10 @@ mod tests {
 
     /// A node with one triangle, translated, with one child that has no visual
     fn sample_body() -> Vec<u8> {
+        sample_body_with_indices(&[0, 1, 2])
+    }
+
+    fn sample_body_with_indices(indices: &[u8; 3]) -> Vec<u8> {
         let visual = [
             vec![1, 0],                  // has visual, no normals
             var(3),                      // vertices
@@ -296,7 +323,7 @@ mod tests {
             floats(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
             var(3),
             vec![2],
-            vec![0, 0, 1, 0, 2, 0],
+            vec![indices[0], 0, indices[1], 0, indices[2], 0],
             string("Stadium/Media/Material/StadiumRoad"),
             vec![1, 1], // casts shadow
         ]
@@ -343,6 +370,28 @@ mod tests {
         assert!(decode_solid(&[0; 16]).is_err());
         let mut body = sample_body();
         body.push(0);
+        assert!(decode_solid(&encode(&body)).is_err());
+    }
+
+    #[test]
+    fn rejects_indices_past_the_vertices() {
+        assert!(decode_solid(&encode(&sample_body_with_indices(&[0, 1, 3]))).is_err());
+    }
+
+    #[test]
+    fn rejects_uv_set_counts_beyond_any_real_mesh() {
+        // A visual with no vertices and four billion UV sets, found by fuzzing
+        let body = [vec![0], string("x"), var(0), vec![0, 0, 1, 0], var(0), var(u32::MAX as usize)].concat();
+        assert!(decode_solid(&encode(&body)).is_err());
+    }
+
+    #[test]
+    fn rejects_nodes_nested_past_the_limit() {
+        // Each node: one child, no rotation, position, visual, LODs, surface, or light, and an empty name
+        let mut body = [vec![0], string("deep")].concat();
+        for _ in 0..100_000 {
+            body.extend([1, 0, 0, 0, 0, 0, 0, 0]);
+        }
         assert!(decode_solid(&encode(&body)).is_err());
     }
 

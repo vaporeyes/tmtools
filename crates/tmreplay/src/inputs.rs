@@ -71,8 +71,10 @@ pub fn read_tm2020_inputs(data: &[u8], ticks: usize, version: i32, start_ms: i32
     let press = |inputs: &mut Vec<Input>, time_ms: i32, name: &str, pressed: bool| {
         inputs.push(Input { time_ms, name: name.into(), value: InputValue::Pressed(pressed) });
     };
+    // Every tick takes at least two bits, so the stream can't hold more ticks than that; past it, reads are zeros
+    let ticks = ticks.min(data.len().saturating_mul(4));
     for tick in 0..ticks {
-        let time_ms = start_ms + tick as i32 * 10;
+        let Some(time_ms) = i32::try_from(tick).ok().and_then(|t| t.checked_mul(10)).and_then(|t| t.checked_add(start_ms)) else { break };
         if !r.bit() {
             let horn_bit = if r.bit() {
                 // Only the two low state bits follow
@@ -120,6 +122,13 @@ pub fn read_tm2020_inputs(data: &[u8], ticks: usize, version: i32, start_ms: i32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tick_counts_are_bounded_by_the_stream() {
+        // Billions of ticks claimed over no data end at once; times near the limit stop rather than overflow
+        assert!(read_tm2020_inputs(&[], usize::MAX, 12, 0).is_empty());
+        assert!(read_tm2020_inputs(&[0; 64], 1000, 12, i32::MAX - 5).len() <= 1000);
+    }
 
     #[test]
     fn decodes_steering_directions() {

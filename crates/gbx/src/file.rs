@@ -78,7 +78,8 @@ impl GbxFile {
             if !user_data.is_empty() {
                 let mut u = Reader::new(user_data);
                 let count = u.count()?;
-                let mut entries = Vec::with_capacity(count);
+                // Each entry is 8 bytes, so the count can't promise more entries than the data holds
+                let mut entries = Vec::with_capacity(count.min(u.remaining() / 8));
                 for _ in 0..count {
                     let raw_id = u.u32()?;
                     let size = u.u32()?;
@@ -168,9 +169,10 @@ fn read_ref_table(r: &mut Reader, version: u16) -> Result<Vec<ExternalRef>> {
         return Ok(Vec::new());
     }
     r.i32()?; // ancestor level
-    skip_folders(r)?;
+    skip_folders(r, 0)?;
 
-    let mut refs = Vec::with_capacity(count);
+    // Each reference takes at least 8 bytes
+    let mut refs = Vec::with_capacity(count.min(r.remaining() / 8));
     for _ in 0..count {
         let flags = r.i32()?;
         let is_resource = flags & 4 != 0;
@@ -187,11 +189,17 @@ fn read_ref_table(r: &mut Reader, version: u16) -> Result<Vec<ExternalRef>> {
     Ok(refs)
 }
 
-fn skip_folders(r: &mut Reader) -> Result<()> {
+/// Folders nest; real files are a few levels deep, and the limit keeps crafted ones from exhausting the stack
+const MAX_FOLDER_DEPTH: u32 = 64;
+
+fn skip_folders(r: &mut Reader, depth: u32) -> Result<()> {
+    if depth > MAX_FOLDER_DEPTH {
+        return format_err("reference table folders nest too deeply");
+    }
     let count = r.count()?;
     for _ in 0..count {
         r.string()?;
-        skip_folders(r)?;
+        skip_folders(r, depth + 1)?;
     }
     Ok(())
 }
@@ -320,5 +328,35 @@ mod tests {
         assert_eq!(gbx.header_reader(0x0309_3000).unwrap().u32().unwrap(), 7);
         assert_eq!(gbx.body, le(&[FACADE]));
         assert!(read_chunks(&mut gbx.body_reader(), |_, _| Ok(None)).unwrap());
+    }
+
+    /// An uncompressed version 6 container up to the reference table, with these bytes for the table
+    fn container_with_ref_table(table: &[u8]) -> Vec<u8> {
+        let mut file = b"GBX".to_vec();
+        file.extend_from_slice(&6u16.to_le_bytes());
+        file.extend_from_slice(b"BUUR");
+        file.extend(le(&[0x0309_3000, 0, 1]));
+        file.extend_from_slice(table);
+        file
+    }
+
+    #[test]
+    fn rejects_folders_nested_past_the_limit() {
+        // One reference, ancestor level 0, then folders each holding one empty-named folder, 100k deep
+        let mut table = le(&[1, 0]);
+        for _ in 0..100_000 {
+            table.extend(le(&[1, 0]));
+        }
+        assert!(GbxFile::parse(&container_with_ref_table(&table)).is_err());
+    }
+
+    #[test]
+    fn rejects_counts_larger_than_the_data() {
+        let mut file = b"GBX".to_vec();
+        file.extend_from_slice(&6u16.to_le_bytes());
+        file.extend_from_slice(b"BUUR");
+        file.extend(le(&[0x0309_3000, 4, i32::MAX as u32]));
+        assert!(GbxFile::parse(&file).is_err());
+        assert!(GbxFile::parse(&container_with_ref_table(&le(&[i32::MAX as u32, 0, 0]))).is_err());
     }
 }

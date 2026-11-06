@@ -62,6 +62,9 @@ pub struct IdState {
     pub strings: Vec<(u32, String)>,
 }
 
+/// How deep node references may nest; real files nest a few levels, and crafted ones would otherwise exhaust the stack
+const MAX_NODE_DEPTH: u32 = 128;
+
 pub(crate) enum NodeSlot {
     /// Lives in another file; references to it read as null
     External,
@@ -303,6 +306,9 @@ impl<'a> Reader<'a> {
             }
             None => {}
         }
+        if self.depth >= MAX_NODE_DEPTH {
+            return format_err(format!("node {index} nests more than {MAX_NODE_DEPTH} references deep"));
+        }
         let class_id = wrap_class_id(self.u32()?);
         self.depth += 1;
         let node = read(class_id, self);
@@ -361,5 +367,17 @@ mod tests {
         let again = r.node_ref::<(u32, i32)>(|_, _| unreachable!()).unwrap().unwrap();
         assert!(Rc::ptr_eq(&first, &again));
         assert!(r.node_ref::<(u32, i32)>(|_, _| unreachable!()).unwrap().is_none());
+    }
+
+    #[test]
+    fn node_refs_nested_past_the_limit_are_an_error() {
+        // Node i's only content is a reference to new node i + 1, far deeper than any real file
+        fn nest(_: u32, r: &mut Reader) -> Result<()> {
+            r.node_ref(nest).map(|_| ())
+        }
+        let data: Vec<u8> = (0..100_000i32).flat_map(|i| [i.to_le_bytes(), 0x0309_2000u32.to_le_bytes()].concat()).collect();
+        let mut r = Reader::new(&data);
+        assert!(r.node_ref(nest).is_err());
+        assert_eq!(r.depth, 0);
     }
 }

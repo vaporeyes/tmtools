@@ -34,11 +34,30 @@ struct RawCar {
     dirt_blend: Option<u8>,
 }
 
-pub fn read_sample_data(compressed: &[u8], uncompressed_size: usize) -> Result<SampleData> {
-    let mut bytes = Vec::with_capacity(uncompressed_size);
-    if flate2::read::ZlibDecoder::new(compressed).read_to_end(&mut bytes).is_err() || bytes.len() != uncompressed_size {
-        return format_err("ghost sample data doesn't decompress to its stated size");
+/// Largest inflated ghost data accepted; real ghosts are far smaller, and the stated size comes from the file
+const MAX_INFLATED_LEN: usize = 256 << 20;
+
+/// Zlib data that must inflate to exactly `size` bytes. Reads at most one byte past that, so a small stream can't
+/// expand without limit, and refuses sizes too large to be real.
+pub(crate) fn inflate_exact(compressed: &[u8], size: usize, what: &str) -> Result<Vec<u8>> {
+    if size > MAX_INFLATED_LEN {
+        return format_err(format!("{what} of {size} bytes is too large"));
     }
+    let mut bytes = Vec::with_capacity(size);
+    let read = flate2::read::ZlibDecoder::new(compressed).take(size as u64 + 1).read_to_end(&mut bytes);
+    if read.is_err() || bytes.len() != size {
+        return format_err(format!("{what} doesn't decompress to its stated size"));
+    }
+    Ok(bytes)
+}
+
+/// The time of sample `i` at a fixed period
+fn fixed_step_time(i: usize, period_ms: i32) -> Result<i32> {
+    i32::try_from(i).ok().and_then(|i| i.checked_mul(period_ms)).map_or_else(|| format_err("ghost sample times overflow"), Ok)
+}
+
+pub fn read_sample_data(compressed: &[u8], uncompressed_size: usize) -> Result<SampleData> {
+    let bytes = inflate_exact(compressed, uncompressed_size, "ghost sample data")?;
 
     let mut r = Reader::new(&bytes);
     let class_id = r.u32()?;
@@ -59,6 +78,10 @@ pub fn read_sample_data(compressed: &[u8], uncompressed_size: usize) -> Result<S
         r.i32()?; // first sample offset
         if count > 1 {
             size_per_sample = r.i32()?;
+            // -1 means each sample has its own size; otherwise every sample takes at least a byte
+            if size_per_sample == 0 || size_per_sample < -1 {
+                return format_err(format!("ghost samples of {size_per_sample} bytes each"));
+            }
             if size_per_sample == -1 {
                 sample_sizes = (0..count - 1).map(|_| r.count()).collect::<Result<_>>()?;
             }
@@ -76,7 +99,7 @@ pub fn read_sample_data(compressed: &[u8], uncompressed_size: usize) -> Result<S
     }
 
     let mut buffer = Reader::new(state_buffer);
-    let mut samples = Vec::with_capacity(count);
+    let mut samples = Vec::with_capacity(count.min(state_buffer.len()));
     let mut time = 0;
     for i in 0..count {
         let data = if size_per_sample != -1 {
@@ -86,7 +109,12 @@ pub fn read_sample_data(compressed: &[u8], uncompressed_size: usize) -> Result<S
         } else {
             buffer.read(sample_sizes.get(i).copied().unwrap_or(0))?
         };
-        time = if state_times.is_empty() { i as i32 * sample_period_ms } else { time + state_times.get(i).copied().unwrap_or(0) };
+        time = if state_times.is_empty() {
+            fixed_step_time(i, sample_period_ms)?
+        } else {
+            let Some(next) = time.checked_add(state_times.get(i).copied().unwrap_or(0)) else { return format_err("ghost sample times overflow") };
+            next
+        };
         samples.push(to_sample(time, &read_car(data, version)?));
     }
 
@@ -110,7 +138,7 @@ pub fn read_old_sample_data(r: &mut Reader) -> Result<SampleData> {
         let Some(data) = raw.get(start.max(0) as usize..end.max(start) as usize) else {
             return format_err("ghost sample offsets run past the sample data");
         };
-        samples.push(to_sample(i as i32 * sample_period_ms, &read_car(data, version)?));
+        samples.push(to_sample(fixed_step_time(i, sample_period_ms)?, &read_car(data, version)?));
     }
     Ok(SampleData { sample_period_ms, samples })
 }
@@ -239,6 +267,35 @@ fn to_sample(time_ms: i32, c: &RawCar) -> Sample {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    fn zlib(data: &[u8]) -> Vec<u8> {
+        let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    #[test]
+    fn inflates_only_the_stated_size() {
+        assert_eq!(inflate_exact(&zlib(b"abc"), 3, "data").unwrap(), b"abc");
+        // A small stream of 64 MiB of zeros claiming 10 bytes stops after 11
+        assert!(inflate_exact(&zlib(&vec![0; 64 << 20]), 10, "data").is_err());
+        assert!(inflate_exact(&zlib(b"abc"), usize::MAX, "data").is_err());
+    }
+
+    #[test]
+    fn rejects_samples_with_no_bytes_each() {
+        // A car class, fixed time step, 50 ms, version 10, no state bytes, then i32::MAX samples of 0 bytes
+        let header: Vec<u8> = [0x0A02_B000u32, 1, 0, 50, 10, 0, i32::MAX as u32, 0, 0, 0].iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert!(read_sample_data(&zlib(&header), header.len()).is_err());
+    }
+
+    #[test]
+    fn fixed_step_times_that_overflow_are_an_error() {
+        assert_eq!(fixed_step_time(3, 50).unwrap(), 150);
+        assert!(fixed_step_time(usize::MAX, 50).is_err());
+        assert!(fixed_step_time(50_000_000, 50).is_err());
+    }
 
     #[test]
     fn unpacks_log_magnitude_vectors() {

@@ -1,0 +1,38 @@
+# ABOUTME: libFuzzer targets for the parsers that read untrusted files: replays (and the Gbx container under them) and
+# ABOUTME: exported meshes. Run with `cargo +nightly fuzz run <target>` from the repository root.
+#
+# On recent macOS, nightly's AddressSanitizer runtime can hang at startup; `-s none` skips it, which still catches
+# panics, timeouts, and memory blowups (the parsers are safe Rust), for example:
+#   cargo +nightly fuzz run -s none parse_replay -- -max_total_time=120 -timeout=10 -rss_limit_mb=2048
+
+[package]
+name = "tmtools-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tmreplay = { path = "../crates/tmreplay" }
+tmassets = { path = "../crates/tmassets" }
+
+# Kept out of the main workspace so it builds only with cargo-fuzz
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "parse_replay"
+path = "fuzz_targets/parse_replay.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_solid"
+path = "fuzz_targets/decode_solid.rs"
+test = false
+doc = false
+bench = false

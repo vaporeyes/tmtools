@@ -168,7 +168,8 @@ fn read_block_chunk(r: &mut Reader, body: &[u8]) -> Result<BlockChunk> {
     let need_unlock = r.u32()?;
     let version = r.i32()?;
     let count = r.count()?;
-    let mut blocks = Vec::with_capacity(count);
+    // Each block takes at least 10 bytes
+    let mut blocks = Vec::with_capacity(count.min(r.remaining() / 10));
     for _ in 0..count {
         let name = match r.id_raw()?.text {
             Some(name) => name,
@@ -501,6 +502,25 @@ pub fn make_uid(seed: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_counts_larger_than_the_data_are_an_error() {
+        // Id version 3, three empty map IDs, no name, three empty decoration IDs, size, unlock, version 6, then
+        // i32::MAX blocks with no data behind them
+        let mut w = Writer::new();
+        w.i32(3);
+        for _ in 0..3 {
+            w.u32(u32::MAX);
+        }
+        w.i32(0);
+        for _ in 0..3 {
+            w.u32(u32::MAX);
+        }
+        for v in [32, 40, 32, 0, 6, i32::MAX] {
+            w.i32(v);
+        }
+        assert!(read_block_chunk(&mut Reader::new(&w.bytes), &w.bytes).is_err());
+    }
 
     #[test]
     fn rewrites_the_xml_ident() {

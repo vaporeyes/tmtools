@@ -64,7 +64,13 @@ impl Lzo<'_> {
     }
 }
 
+/// Largest body this decoder will produce; TMF bodies are a few megabytes, and the stated size is read from the file
+const MAX_OUTPUT_LEN: usize = 256 << 20;
+
 pub fn lzo1x_decompress(src: &[u8], out_len: usize) -> Result<Vec<u8>> {
+    if out_len > MAX_OUTPUT_LEN {
+        return format_err(format!("LZO body of {out_len} bytes is too large"));
+    }
     let mut z = Lzo { src, out: Vec::with_capacity(out_len), out_len, ip: 0 };
     let mut t: usize = 0;
     let mut state = State::Loop;
@@ -211,5 +217,10 @@ mod tests {
         let src = [17 + 5, b'h', b'e', b'l', b'l', b'o', 0x11, 0, 0];
         assert!(lzo1x_decompress(&src, 6).is_err());
         assert!(lzo1x_decompress(&src[..4], 5).is_err());
+    }
+
+    #[test]
+    fn rejects_stated_sizes_too_large_to_allocate() {
+        assert!(lzo1x_decompress(&[0x11, 0, 0], usize::MAX).is_err());
     }
 }

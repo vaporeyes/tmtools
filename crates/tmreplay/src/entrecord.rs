@@ -4,7 +4,6 @@
 use crate::model::Sample;
 use gbx::{format_err, read_chunks, Flow, Reader, Result};
 use std::f32::consts::TAU;
-use std::io::Read;
 
 const ENT_RECORD_DATA: u32 = 0x0911_F000;
 /// CSceneVehicleVis: the car's visual state
@@ -34,10 +33,7 @@ pub fn read_ent_record(class_id: u32, r: &mut Reader) -> Result<Vec<Sample>> {
             return format_err(format!("ghost record data version {version} is not supported"));
         }
         let uncompressed = c.count()?;
-        let mut bytes = Vec::with_capacity(uncompressed);
-        if flate2::read::ZlibDecoder::new(c.data()?).read_to_end(&mut bytes).is_err() || bytes.len() != uncompressed {
-            return format_err("ghost record data doesn't decompress to its stated size");
-        }
+        let bytes = crate::samples::inflate_exact(c.data()?, uncompressed, "ghost record data")?;
         let entities = read_entities(&mut Reader::new(&bytes), version)?;
         let vehicle = entities.into_iter().filter(|e| e.class_id == VEHICLE_VIS).max_by_key(|e| e.states.len());
         samples = vehicle.map(|v| v.states.iter().map(|(time, state)| vehicle_sample(*time, state)).collect::<Result<_>>()).transpose()?.unwrap_or_default();
@@ -51,7 +47,8 @@ fn read_entities(r: &mut Reader, version: i32) -> Result<Vec<Entity>> {
     r.i32()?; // start
     r.i32()?; // end
     let desc_count = r.count()?;
-    let mut classes = Vec::with_capacity(desc_count);
+    // Each description takes at least 24 bytes
+    let mut classes = Vec::with_capacity(desc_count.min(r.remaining() / 24));
     for _ in 0..desc_count {
         classes.push(r.u32()?);
         r.i32()?; // state size
@@ -113,10 +110,15 @@ fn read_encoded_states(r: &mut Reader) -> Result<Vec<(i32, Vec<u8>)>> {
         return Ok(Vec::new());
     }
     let size = r.count()?;
-    let mut time = 0;
+    // A time step and `size` delta bytes per state must all be there before allocating the states
+    if size.checked_add(4).and_then(|per_state| per_state.checked_mul(count)).is_none_or(|needed| needed > r.remaining()) {
+        return format_err(format!("{count} entity states of {size} bytes run past the record data"));
+    }
+    let mut time: i32 = 0;
     let mut states = Vec::with_capacity(count);
     for _ in 0..count {
-        time += r.i32()?;
+        let Some(next) = time.checked_add(r.i32()?) else { return format_err("entity state times overflow") };
+        time = next;
         states.push((time, vec![0; size]));
     }
     for i in 0..size {
@@ -182,5 +184,18 @@ mod tests {
         bytes.extend([1, 2, 9, 255]);
         let states = read_encoded_states(&mut Reader::new(&bytes)).unwrap();
         assert_eq!(states, vec![(40, vec![1, 9]), (90, vec![3, 8])]);
+    }
+
+    #[test]
+    fn encoded_states_larger_than_the_data_are_an_error() {
+        // 1000 states of 2 GiB each, with 8 bytes behind them
+        let bytes: Vec<u8> = [1000i32, i32::MAX, 0, 0].iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert!(read_encoded_states(&mut Reader::new(&bytes)).is_err());
+    }
+
+    #[test]
+    fn encoded_state_times_that_overflow_are_an_error() {
+        let bytes: Vec<u8> = [2i32, 0, i32::MAX, 1].iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert!(read_encoded_states(&mut Reader::new(&bytes)).is_err());
     }
 }
