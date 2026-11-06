@@ -1,6 +1,7 @@
 // ABOUTME: The contract between the tmtools shell and its modules, and the Session every module reads and drives.
 // ABOUTME: One clock is shared, so seeking in any module moves all of them.
 
+pub mod files;
 pub mod persist;
 mod session;
 pub mod theme;

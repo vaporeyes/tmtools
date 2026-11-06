@@ -104,13 +104,21 @@ fn fetch_list(base: &str, auth: Option<&str>) -> Result<Vec<Entry>, String> {
     serde_json::from_str(&text).map_err(|e| format!("The service's list isn't readable: {e}"))
 }
 
+/// Largest replay accepted from the service; real replays are a few megabytes
+const MAX_DOWNLOAD_BYTES: u64 = 64 << 20;
+
 fn fetch_file(base: &str, auth: Option<&str>, id: &str) -> Result<PathBuf, String> {
     let path = cache_path(id).ok_or("No cache folder for downloads on this system")?;
     if !path.exists() {
         let mut bytes = Vec::new();
-        std::io::Read::read_to_end(&mut get(&format!("{base}/replays/{id}/file"), auth)?.into_reader(), &mut bytes).map_err(|e| e.to_string())?;
+        let body = get(&format!("{base}/replays/{id}/file"), auth)?.into_reader();
+        std::io::Read::read_to_end(&mut std::io::Read::take(body, MAX_DOWNLOAD_BYTES + 1), &mut bytes).map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > MAX_DOWNLOAD_BYTES {
+            return Err(format!("The service sent more than {} MB for one replay", MAX_DOWNLOAD_BYTES >> 20));
+        }
         std::fs::create_dir_all(path.parent().expect("cache files have a folder")).map_err(|e| e.to_string())?;
-        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        // A partial file would be reused as the cached replay, so it is written all or nothing
+        tmtools_core::files::write_atomically(&path, &bytes).map_err(|e| e.to_string())?;
     }
     Ok(path)
 }
@@ -237,14 +245,6 @@ mod tests {
     }
 
     #[test]
-    fn encodes_base64_with_padding() {
-        assert_eq!(base64(b""), "");
-        assert_eq!(base64(b"f"), "Zg==");
-        assert_eq!(base64(b"fo"), "Zm8=");
-        assert_eq!(base64(b"foo"), "Zm9v");
-    }
-
-    #[test]
     fn sends_credentials_only_over_https_or_to_this_machine() {
         assert!(may_send_credentials("https://replays.example.com"));
         assert!(may_send_credentials("HTTPS://replays.example.com:8443/lib"));
@@ -255,6 +255,14 @@ mod tests {
         assert!(!may_send_credentials("http://localhost.example.com"));
         assert!(!may_send_credentials("ftp://localhost"));
         assert!(!may_send_credentials("localhost:5080"));
+    }
+
+    #[test]
+    fn encodes_base64_with_padding() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
     }
 
     #[test]

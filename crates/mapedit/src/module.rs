@@ -283,7 +283,7 @@ impl MapEditModule {
         if ui.button("Save as...").clicked() {
             let dialog = rfd::FileDialog::new().add_filter("TMF map", &["Gbx"]).set_file_name(file_name(&doc.name));
             if let Some(path) = dialog.save_file() {
-                self.message = Some(match doc.to_bytes(self.author.trim()).and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| e.to_string())) {
+                self.message = Some(match doc.to_bytes(self.author.trim()).and_then(|bytes| tmtools_core::files::write_atomically(&path, &bytes).map_err(|e| e.to_string())) {
                     Ok(()) => {
                         doc.dirty = false;
                         format!("Saved {} (UID {})", path.display(), doc.uid)
