@@ -50,6 +50,21 @@ pub fn split_credentials(url: &str) -> (String, Option<String>) {
     }
 }
 
+/// Whether a password may go to this base URL: over HTTPS anywhere, over plain HTTP only to this machine
+pub fn may_send_credentials(base: &str) -> bool {
+    let Some((scheme, rest)) = base.split_once("://") else { return false };
+    if scheme.eq_ignore_ascii_case("https") {
+        return true;
+    }
+    let authority = rest.split('/').next().unwrap_or_default();
+    // Drop the port; an IPv6 host keeps its brackets
+    let host = match authority.find(']') {
+        Some(end) => &authority[..=end],
+        None => authority.split(':').next().unwrap_or_default(),
+    };
+    scheme.eq_ignore_ascii_case("http") && ["localhost", "127.0.0.1", "[::1]"].iter().any(|h| host.eq_ignore_ascii_case(h))
+}
+
 fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
@@ -123,6 +138,10 @@ impl Default for LibraryWindow {
 impl LibraryWindow {
     fn start(&mut self, work: impl FnOnce(String, Option<String>) -> Reply + Send + 'static) {
         let (base, auth) = split_credentials(&self.url);
+        if auth.is_some() && !may_send_credentials(&base) {
+            self.status = Some("A password is only sent over https://, or plain http:// to this machine".into());
+            return;
+        }
         let (sender, receiver) = channel();
         std::thread::spawn(move || {
             let _ = sender.send(work(base, auth));
@@ -223,6 +242,19 @@ mod tests {
         assert_eq!(base64(b"f"), "Zg==");
         assert_eq!(base64(b"fo"), "Zm8=");
         assert_eq!(base64(b"foo"), "Zm9v");
+    }
+
+    #[test]
+    fn sends_credentials_only_over_https_or_to_this_machine() {
+        assert!(may_send_credentials("https://replays.example.com"));
+        assert!(may_send_credentials("HTTPS://replays.example.com:8443/lib"));
+        assert!(may_send_credentials("http://localhost:5080"));
+        assert!(may_send_credentials("http://127.0.0.1"));
+        assert!(may_send_credentials("http://[::1]:5080/x"));
+        assert!(!may_send_credentials("http://replays.example.com"));
+        assert!(!may_send_credentials("http://localhost.example.com"));
+        assert!(!may_send_credentials("ftp://localhost"));
+        assert!(!may_send_credentials("localhost:5080"));
     }
 
     #[test]

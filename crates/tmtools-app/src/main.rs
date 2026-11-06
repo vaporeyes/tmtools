@@ -81,7 +81,8 @@ impl eframe::App for TmtoolsApp {
         }
         let mut saved = self.session.save();
         saved.active_tab = self.active;
-        saved.settings.insert("shell.library_url".into(), self.library.url.clone());
+        // The user and password stay in memory for this run only; the saved session is plain text
+        saved.settings.insert("shell.library_url".into(), library::split_credentials(&self.library.url).0);
         for m in &self.modules {
             m.save_settings(&mut saved.settings);
         }
