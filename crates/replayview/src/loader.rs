@@ -45,12 +45,12 @@ impl SceneLoad {
         Self { key, receiver }
     }
 
-    /// The finished scene, once; None while it is still loading
-    pub fn poll(&self) -> Option<LoadedScene> {
+    /// The finished scene, once; None while it is still loading, and an error when the loader died without one
+    pub fn poll(&self) -> Option<Result<LoadedScene, String>> {
         match self.receiver.try_recv() {
-            Ok(scene) => Some(scene),
+            Ok(scene) => Some(Ok(scene)),
             Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => None,
+            Err(TryRecvError::Disconnected) => Some(Err("Loading the map with game assets failed; the export may hold a damaged mesh or texture.".to_owned())),
         }
     }
 }
@@ -92,4 +92,18 @@ fn load(store: &AssetStore, map: &ReplayMap, vehicles: &[String], key: String) -
     }
 
     LoadedScene { key, map: map_scene, vehicles: vehicle_meshes, vehicle_info, textures, error }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_loader_that_dies_reports_an_error() {
+        let (sender, receiver) = channel();
+        let load = SceneLoad { key: "map".into(), receiver };
+        assert!(load.poll().is_none());
+        drop(sender);
+        assert!(matches!(load.poll(), Some(Err(_))));
+    }
 }

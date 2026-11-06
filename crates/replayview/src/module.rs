@@ -50,6 +50,8 @@ pub struct ReplayViewModule {
     /// Draw with the game assets when an export is set
     textured: bool,
     load: Option<SceneLoad>,
+    /// The key of a scene whose load failed, so it isn't started again every frame
+    failed: Option<String>,
     /// The scene the GPU holds, and how it is lit
     ready: Option<ReadyScene>,
     /// Camera settings per vehicle from the export
@@ -79,6 +81,7 @@ impl Default for ReplayViewModule {
             ghost_opacity: 0.5,
             textured: true,
             load: None,
+            failed: None,
             ready: None,
             vehicle_info: HashMap::new(),
             vehicles: HashMap::new(),
@@ -318,7 +321,7 @@ impl ReplayViewModule {
 
         // Start loading when the map or the set of vehicles changes
         let current = self.ready.as_ref().map(|r| r.key.as_str());
-        if current != Some(key.as_str()) && self.load.as_ref().is_none_or(|l| l.key != key) {
+        if current != Some(key.as_str()) && self.load.as_ref().is_none_or(|l| l.key != key) && self.failed.as_deref() != Some(key.as_str()) {
             self.load = Some(SceneLoad::start(store, map.clone(), vehicles.clone()));
             self.status = Some("Loading the map with game assets...".into());
         }
@@ -326,7 +329,12 @@ impl ReplayViewModule {
         if self.load.is_some() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
-        if let Some(loaded) = self.load.as_ref().and_then(SceneLoad::poll) {
+        let polled = self.load.as_ref().and_then(SceneLoad::poll);
+        if let Some(Err(e)) = &polled {
+            self.failed = self.load.take().map(|l| l.key);
+            self.status = Some(e.clone());
+        }
+        if let Some(Ok(loaded)) = polled {
             self.load = None;
             let mut egui_renderer = rs.renderer.write();
             let mut renderer = egui_renderer.callback_resources.remove::<Renderer>().unwrap_or_else(|| Renderer::new(&rs.device, &rs.queue));
