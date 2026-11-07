@@ -41,6 +41,16 @@ rfd = "0.15"
 opt-level = 3
 lto = "thin"
 
-# Parsing is the hot path when loading long replays; keep it fast in debug builds too
+# Parsing is the hot path when loading long replays; keep it fast in debug builds too. "*" covers only dependencies,
+# so the workspace's own parsing crates are named as well.
 [profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.gbx]
+opt-level = 2
+
+[profile.dev.package.tmreplay]
+opt-level = 2
+
+[profile.dev.package.tmassets]
 opt-level = 2
