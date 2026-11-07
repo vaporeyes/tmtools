@@ -114,6 +114,13 @@ enum Pass {
     Ghost,
 }
 
+/// A material's bind group and the textures it binds, so a texture stays cached while any cached material uses it
+struct Material {
+    group: wgpu::BindGroup,
+    /// Held, not read: keeps these entries in the texture cache
+    _textures: Vec<Arc<wgpu::TextureView>>,
+}
+
 struct GpuPart {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
@@ -125,7 +132,7 @@ struct GpuPart {
     ghost_count: u32,
     /// For vehicles: which of the vehicle's parts this is, to pick its matrix from each car's posed parts
     source: usize,
-    material: Arc<wgpu::BindGroup>,
+    material: Arc<Material>,
     pass: Pass,
     double_sided: bool,
 }
@@ -167,7 +174,7 @@ pub struct Renderer {
     line: wgpu::RenderPipeline,
     white: wgpu::TextureView,
     textures: HashMap<(String, bool), Arc<wgpu::TextureView>>,
-    materials: HashMap<String, Arc<wgpu::BindGroup>>,
+    materials: HashMap<String, Arc<Material>>,
     targets: Option<Targets>,
     /// The scene key the uploaded map belongs to
     pub scene_key: Option<String>,
@@ -330,6 +337,9 @@ impl Renderer {
                 self.vehicles.insert(name.clone(), gpu);
             }
         }
+        // The previous map is gone now; drop what only it used, so each map opened doesn't add to GPU memory
+        drop_unused(&mut self.materials);
+        drop_unused(&mut self.textures);
         self.scene_key = Some(scene.key.clone());
     }
 
@@ -441,7 +451,7 @@ impl Renderer {
                 let white = &self.white;
                 let pick = |v: &Option<Arc<wgpu::TextureView>>| v.as_ref().map_or(white, |v| v.as_ref()).clone();
                 let views = [pick(&diffuse), pick(&blend2), pick(&blend_i), pick(&blend3), pick(&specular), pick(&normal)];
-                let group = Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("material"),
                     layout: &self.material_layout,
                     entries: &[
@@ -454,9 +464,11 @@ impl Renderer {
                         wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&views[4]) },
                         wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&views[5]) },
                     ],
-                }));
-                self.materials.insert(key, group.clone());
-                group
+                });
+                let textures = [diffuse, blend2, blend_i, blend3, specular, normal].into_iter().flatten().collect();
+                let material = Arc::new(Material { group, _textures: textures });
+                self.materials.insert(key, material.clone());
+                material
             }
         };
 
@@ -551,7 +563,7 @@ impl Renderer {
         for wanted in [Pass::Opaque, Pass::Blend, Pass::Add] {
             for part in parts.iter().filter(|p| p.pass == wanted) {
                 pass.set_pipeline(&self.pipelines[&(part.pass, part.double_sided)]);
-                pass.set_bind_group(1, part.material.as_ref(), &[]);
+                pass.set_bind_group(1, &part.material.group, &[]);
                 pass.set_vertex_buffer(0, part.vertices.slice(..));
                 pass.set_vertex_buffer(1, part.instances.slice(..));
                 pass.set_index_buffer(part.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -562,7 +574,7 @@ impl Renderer {
         for part in self.vehicles.values().flatten().filter(|p| p.ghost_count > 0 && p.pass != Pass::Add) {
             let Some(instances) = &part.ghost_instances else { continue };
             pass.set_pipeline(&self.pipelines[&(Pass::Ghost, part.double_sided)]);
-            pass.set_bind_group(1, part.material.as_ref(), &[]);
+            pass.set_bind_group(1, &part.material.group, &[]);
             pass.set_vertex_buffer(0, part.vertices.slice(..));
             pass.set_vertex_buffer(1, instances.slice(..));
             pass.set_index_buffer(part.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -687,6 +699,11 @@ fn write_instances(device: &wgpu::Device, queue: &wgpu::Queue, buffer: &mut wgpu
 }
 
 /// The image upside down: rows in reverse order
+/// Drops cache entries that nothing outside the cache holds
+fn drop_unused<K, V>(cache: &mut HashMap<K, Arc<V>>) {
+    cache.retain(|_, value| Arc::strong_count(value) > 1);
+}
+
 fn flip_rows(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     let row = (width * 4) as usize;
     (0..height as usize).rev().flat_map(|y| rgba[y * row..(y + 1) * row].iter().copied()).collect()
@@ -786,6 +803,17 @@ impl egui_wgpu::CallbackTrait for DrawCallback {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unused_cache_entries_are_dropped() {
+        let held = Arc::new(1);
+        let mut cache = HashMap::from([("held", held.clone()), ("unused", Arc::new(2))]);
+        drop_unused(&mut cache);
+        assert_eq!(cache.keys().collect::<Vec<_>>(), [&"held"]);
+        drop(held);
+        drop_unused(&mut cache);
+        assert!(cache.is_empty());
+    }
 
     #[test]
     fn mips_average_each_2x2_block() {
