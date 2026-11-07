@@ -116,6 +116,21 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// Largest inflated mesh body; real ones reach about 20 MB, and a small crafted file could otherwise inflate without end
+const MAX_BODY_LEN: usize = 256 << 20;
+
+fn inflate(compressed: &[u8], limit: usize) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    flate2::read::DeflateDecoder::new(compressed)
+        .take(limit as u64 + 1)
+        .read_to_end(&mut body)
+        .map_err(|e| AssetError::Format(format!("mesh data doesn't inflate: {e}")))?;
+    if body.len() > limit {
+        return format_err(format!("mesh data inflates past {limit} bytes"));
+    }
+    Ok(body)
+}
+
 pub fn decode_solid(data: &[u8]) -> Result<Solid> {
     let mut header = Reader { bytes: data, pos: 0 };
     if header.take(MAGIC.len())? != MAGIC {
@@ -127,10 +142,7 @@ pub fn decode_solid(data: &[u8]) -> Result<Solid> {
     }
     let lod = header.u8()?;
 
-    let mut body = Vec::new();
-    flate2::read::DeflateDecoder::new(&data[header.pos..])
-        .read_to_end(&mut body)
-        .map_err(|e| AssetError::Format(format!("mesh data doesn't inflate: {e}")))?;
+    let body = inflate(&data[header.pos..], MAX_BODY_LEN)?;
     let mut r = Reader { bytes: &body, pos: 0 };
 
     if r.bool()? {
@@ -350,6 +362,16 @@ mod tests {
         let mut deflate = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
         deflate.write_all(body).unwrap();
         [MAGIC.to_vec(), var(2), vec![255], deflate.finish().unwrap()].concat()
+    }
+
+    #[test]
+    fn mesh_bodies_inflating_past_the_limit_are_an_error() {
+        use std::io::Write;
+        let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&[0; 11]).unwrap();
+        let compressed = encoder.finish().unwrap();
+        assert_eq!(inflate(&compressed, 11).unwrap().len(), 11);
+        assert!(inflate(&compressed, 10).is_err());
     }
 
     #[test]
