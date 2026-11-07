@@ -78,11 +78,13 @@ pub struct Playback {
     pub speed: f64,
 }
 
+/// Files, runs, the focus, and the clock change only through methods, which keep run indices, the focus, and the
+/// clock's time valid; modules read them through accessors
 pub struct Session {
-    pub files: Vec<LoadedFile>,
-    pub runs: Vec<Run>,
-    pub focus: Option<usize>,
-    pub playback: Playback,
+    pub(crate) files: Vec<LoadedFile>,
+    pub(crate) runs: Vec<Run>,
+    pub(crate) focus: Option<usize>,
+    pub(crate) playback: Playback,
     /// The last load message, shown in the shell
     pub status: Option<String>,
     /// Meshes and textures exported from a TMF install, for drawing maps and cars as the game does
@@ -111,6 +113,51 @@ impl Default for Session {
 }
 
 impl Session {
+    pub fn files(&self) -> &[LoadedFile] {
+        &self.files
+    }
+
+    pub fn runs(&self) -> &[Run] {
+        &self.runs
+    }
+
+    pub fn focus(&self) -> Option<usize> {
+        self.focus
+    }
+
+    pub fn playback(&self) -> Playback {
+        self.playback
+    }
+
+    /// Focuses a run and shows it; ignored for a run that doesn't exist
+    pub fn set_focus(&mut self, run: usize) {
+        if let Some(r) = self.runs.get_mut(run) {
+            r.visible = true;
+            self.focus = Some(run);
+        }
+    }
+
+    pub fn set_visible(&mut self, run: usize, visible: bool) {
+        if let Some(r) = self.runs.get_mut(run) {
+            r.visible = visible;
+        }
+    }
+
+    pub fn set_all_visible(&mut self, visible: bool) {
+        self.runs.iter_mut().for_each(|r| r.visible = visible);
+    }
+
+    pub fn pause(&mut self) {
+        self.playback.playing = false;
+    }
+
+    /// Sets the playback speed to one of SPEEDS; other values are ignored
+    pub fn set_speed(&mut self, speed: f64) {
+        if SPEEDS.contains(&speed) {
+            self.playback.speed = speed;
+        }
+    }
+
     /// Reads and parses a file before returning; for startup, where what follows needs the file in place
     pub fn load_path(&mut self, path: &Path) {
         match LoadedFile::read(path) {
@@ -397,5 +444,26 @@ mod tests {
         assert_eq!(s.files.len(), 1);
         assert!(s.files[0].replay.is_err());
         assert!(s.runs.is_empty() && s.focus.is_none());
+    }
+
+    #[test]
+    fn focusing_shows_the_run_and_ignores_runs_that_dont_exist() {
+        let mut s = session_with_runs(&[1000, 2000]);
+        s.set_visible(1, false);
+        s.set_focus(1);
+        assert_eq!(s.focus(), Some(1));
+        assert!(s.runs()[1].visible);
+        s.set_focus(5);
+        s.set_visible(5, false);
+        assert_eq!(s.focus(), Some(1));
+    }
+
+    #[test]
+    fn only_offered_speeds_are_taken() {
+        let mut s = Session::default();
+        s.set_speed(0.25);
+        s.set_speed(f64::NAN);
+        s.set_speed(3.0);
+        assert_eq!(s.playback().speed, 0.25);
     }
 }

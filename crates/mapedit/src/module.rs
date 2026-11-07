@@ -225,18 +225,18 @@ impl MapEditModule {
                 }
             }
             ui.menu_button("Generate", |ui| self.generate_menu(ui, session)).response.on_hover_text("Build a new Stadium platform/tech track from your replays");
-            let maps: Vec<usize> = (0..session.files.len()).filter(|&f| session.files[f].replay.as_ref().map_or(true, |r| r.embedded_map.is_some())).collect();
+            let maps: Vec<usize> = (0..session.files().len()).filter(|&f| session.files()[f].replay.as_ref().map_or(true, |r| r.embedded_map.is_some())).collect();
             if !maps.is_empty() {
                 let mut chosen = None;
                 egui::ComboBox::from_id_salt("mapedit-loaded").selected_text("Edit a loaded map").show_ui(ui, |ui| {
                     for &f in &maps {
-                        if ui.selectable_label(false, session.files[f].title()).clicked() {
+                        if ui.selectable_label(false, session.files()[f].title()).clicked() {
                             chosen = Some(f);
                         }
                     }
                 });
                 if let Some(f) = chosen {
-                    let file = &session.files[f];
+                    let file = &session.files()[f];
                     match open_bytes(&file.bytes, file.title()) {
                         Ok(doc) => self.open(doc),
                         Err(e) => self.message = Some(e),
@@ -576,8 +576,8 @@ impl Module for MapEditModule {
     fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, _wgpu: Option<&tmtools_core::RenderState>) {
         // With nothing open yet, start on the focused run's map, or else the first loaded map file
         if self.doc.is_none() && self.message.is_none() {
-            let focused = session.focus.map(|r| &session.files[session.runs[r].file]);
-            let first_map = || session.files.iter().find(|f| f.replay.is_err() && Map::parse(&f.bytes).is_ok());
+            let focused = session.focus().map(|r| &session.files()[session.runs()[r].file]);
+            let first_map = || session.files().iter().find(|f| f.replay.is_err() && Map::parse(&f.bytes).is_ok());
             if let Some(file) = focused.or_else(first_map) {
                 if let Ok(doc) = open_bytes(&file.bytes, file.title()) {
                     self.open(doc);

@@ -59,7 +59,7 @@ pub struct InputScopeModule {
 }
 
 fn run_identity(session: &Session, run: usize) -> usize {
-    (Arc::as_ptr(&session.files[session.runs[run].file].bytes) as usize) ^ session.runs[run].ghost
+    (Arc::as_ptr(&session.files()[session.runs()[run].file].bytes) as usize) ^ session.runs()[run].ghost
 }
 
 impl Default for InputScopeModule {
@@ -98,11 +98,11 @@ impl Module for InputScopeModule {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, _wgpu: Option<&tmtools_core::RenderState>) {
-        let Some(focus) = session.focus else {
+        let Some(focus) = session.focus() else {
             ui.centered_and_justified(|ui| ui.label("Open a replay to analyze its inputs."));
             return;
         };
-        if self.compare.is_some_and(|c| c >= session.runs.len() || c == focus) {
+        if self.compare.is_some_and(|c| c >= session.runs().len() || c == focus) {
             self.compare = None;
         }
 
@@ -111,14 +111,14 @@ impl Module for InputScopeModule {
 
         let mut rows: Vec<usize> = vec![focus];
         rows.extend(self.compare);
-        rows.retain(|&r| session.runs[r].track.is_some());
+        rows.retain(|&r| session.runs()[r].track.is_some());
         if rows.is_empty() {
             ui.label("This run has no recorded inputs.");
             return;
         }
 
         if let Some(seek) = self.roll(ui, session, &rows) {
-            session.playback.playing = false;
+            session.pause();
             session.seek(seek);
         }
         ui.add_space(4.0);
@@ -131,7 +131,7 @@ impl Module for InputScopeModule {
                 self.hold_table(&mut cols[1], session, focus)
             });
         if let Some(t) = seek {
-            session.playback.playing = false;
+            session.pause();
             session.seek(t as f64);
         }
     }
@@ -139,8 +139,8 @@ impl Module for InputScopeModule {
 
 /// The focused run's next input change after the playhead, and how many seconds and ticks away it is
 fn next_strip(ui: &mut egui::Ui, session: &Session, focus: usize) {
-    let Some(track) = &session.runs[focus].track else { return };
-    let now = session.playback.time_ms.round() as i32;
+    let Some(track) = &session.runs()[focus].track else { return };
+    let now = session.playback().time_ms.round() as i32;
     let next = track.next_change(now);
     let response = egui::Frame::new().fill(SIGNAL.gamma_multiply(0.16)).inner_margin(egui::Margin { left: 12, right: 10, top: 4, bottom: 4 }).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -162,14 +162,14 @@ fn next_strip(ui: &mut egui::Ui, session: &Session, focus: usize) {
 impl InputScopeModule {
     fn toolbar(&mut self, ui: &mut egui::Ui, session: &Session, focus: usize) {
         tmtools_core::toolbar(ui, |ui| {
-            color_swatch(ui, session.runs[focus].color);
-            ui.strong(&session.runs[focus].label);
+            color_swatch(ui, session.runs()[focus].color);
+            ui.strong(&session.runs()[focus].label);
             ui.separator();
             ui.label("Compare with");
-            let selected = self.compare.map_or("nothing".to_owned(), |c| session.runs[c].label.clone());
+            let selected = self.compare.map_or("nothing".to_owned(), |c| session.runs()[c].label.clone());
             egui::ComboBox::from_id_salt("inputscope-compare").selected_text(selected).show_ui(ui, |ui| {
                 ui.selectable_value(&mut self.compare, None, "nothing");
-                for (i, run) in session.runs.iter().enumerate() {
+                for (i, run) in session.runs().iter().enumerate() {
                     if i != focus && run.track.is_some() {
                         ui.selectable_value(&mut self.compare, Some(i), &run.label);
                     }
@@ -204,7 +204,7 @@ impl InputScopeModule {
             self.follow = false;
         }
         if self.center_pending {
-            self.view.start_ms = session.playback.time_ms - width / 2.0 * self.view.ms_per_px;
+            self.view.start_ms = session.playback().time_ms - width / 2.0 * self.view.ms_per_px;
             self.center_pending = false;
         }
         if response.dragged() {
@@ -226,7 +226,7 @@ impl InputScopeModule {
         }
         // Following keeps the playhead in view however it moves: playing, stepping, or seeking from another module
         if self.follow {
-            self.view.follow(session.playback.time_ms, width);
+            self.view.follow(session.playback().time_ms, width);
         }
 
         // With position alignment, the compared run's times map onto the focused run's through the warp
@@ -259,13 +259,13 @@ impl InputScopeModule {
 
         let mut top = rect.top();
         for &run in runs {
-            let track = session.runs[run].track.as_ref().expect("rows have tracks");
+            let track = session.runs()[run].track.as_ref().expect("rows have tracks");
             let warp = warp.as_ref().filter(|_| run != runs[0]);
             let to_view = |t: f64| warp.map_or(t, |w| w.to_focus(t as f32) as f64);
             let x = |t: f64| x(to_view(t));
             let (from, to) = warp.map_or((from, to), |w| (w.to_other(from as f32) as f64, w.to_other(to as f32) as f64));
             let group = Rect::from_min_max(Pos2::new(rect.left(), top), Pos2::new(rect.right(), top + 4.0 * ROW_H));
-            painter.rect_filled(Rect::from_min_size(group.min, Vec2::new(4.0, group.height())), 0.0, session.runs[run].color);
+            painter.rect_filled(Rect::from_min_size(group.min, Vec2::new(4.0, group.height())), 0.0, session.runs()[run].color);
 
             for (row, channel) in Channel::ALL.into_iter().enumerate() {
                 let row_rect = Rect::from_min_size(Pos2::new(lane.left(), top + row as f32 * ROW_H), Vec2::new(lane.width(), ROW_H));
@@ -291,7 +291,7 @@ impl InputScopeModule {
         let tick = session.tick_ms() as f64;
         let tick_rect = Rect::from_min_max(Pos2::new(x(tick), rect.top()), Pos2::new(x(tick + TICK_MS as f64).max(x(tick) + 1.0), rows_bottom));
         painter.rect_filled(tick_rect, 0.0, Color32::from_white_alpha(28));
-        painter.line_segment([Pos2::new(x(session.playback.time_ms), rect.top()), Pos2::new(x(session.playback.time_ms), rect.bottom())], Stroke::new(1.5, Color32::WHITE));
+        painter.line_segment([Pos2::new(x(session.playback().time_ms), rect.top()), Pos2::new(x(session.playback().time_ms), rect.bottom())], Stroke::new(1.5, Color32::WHITE));
 
         // Hover: the tick under the pointer and every input's state there
         if let Some(pos) = response.hover_pos().filter(|p| p.x >= lane.left()) {
@@ -300,7 +300,7 @@ impl InputScopeModule {
             response.clone().on_hover_ui_at_pointer(|ui| {
                 ui.strong(format!("{}  (tick {})", format_race_time(at as i64), at / TICK_MS));
                 for &run in runs {
-                    let track = session.runs[run].track.as_ref().expect("rows have tracks");
+                    let track = session.runs()[run].track.as_ref().expect("rows have tracks");
                     // A warped run is read where its car was at this spot
                     let (run_at, note) = match warp.as_ref().filter(|_| run != runs[0]) {
                         Some(w) => {
@@ -310,7 +310,7 @@ impl InputScopeModule {
                         None => (at, String::new()),
                     };
                     ui.horizontal(|ui| {
-                        color_swatch(ui, session.runs[run].color);
+                        color_swatch(ui, session.runs()[run].color);
                         ui.label(format!("{}{note}", hover_summary(track, run_at)));
                     });
                 }
@@ -342,10 +342,10 @@ impl InputScopeModule {
     fn stats(&mut self, ui: &mut egui::Ui, session: &Session, runs: &[usize]) {
         ui.heading("Holds");
         for &run in runs {
-            let track = session.runs[run].track.as_ref().expect("rows have tracks");
+            let track = session.runs()[run].track.as_ref().expect("rows have tracks");
             ui.horizontal(|ui| {
-                color_swatch(ui, session.runs[run].color);
-                ui.label(&session.runs[run].label);
+                color_swatch(ui, session.runs()[run].color);
+                ui.label(&session.runs()[run].label);
             });
             egui::Grid::new(("inputscope-stats", run)).striped(true).num_columns(6).show(ui, |ui| {
                 for header in ["", "Holds", "Total", "Shortest", "Longest", "Mean"] {
@@ -375,8 +375,8 @@ impl InputScopeModule {
 
     /// The focused run's holds in time order; returns a time to seek to when a row's time is clicked
     fn hold_table(&mut self, ui: &mut egui::Ui, session: &Session, focus: usize) -> Option<i32> {
-        let track = session.runs[focus].track.as_ref()?;
-        let other = self.compare.and_then(|c| session.runs[c].track.as_ref().map(|t| (c, t)));
+        let track = session.runs()[focus].track.as_ref()?;
+        let other = self.compare.and_then(|c| session.runs()[c].track.as_ref().map(|t| (c, t)));
         ui.horizontal(|ui| {
             ui.heading("Hold table");
             for (i, channel) in Channel::ALL.into_iter().enumerate() {

@@ -56,8 +56,8 @@ impl Default for TelemetryModule {
 }
 
 fn run_key(session: &Session, run: usize) -> RunKey {
-    let r = &session.runs[run];
-    (std::sync::Arc::as_ptr(&session.files[r.file].bytes) as usize, r.ghost)
+    let r = &session.runs()[run];
+    (std::sync::Arc::as_ptr(&session.files()[r.file].bytes) as usize, r.ghost)
 }
 
 impl Module for TelemetryModule {
@@ -86,7 +86,7 @@ impl Module for TelemetryModule {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, _wgpu: Option<&tmtools_core::RenderState>) {
-        let Some(focus) = session.focus else {
+        let Some(focus) = session.focus() else {
             ui.centered_and_justified(|ui| ui.label("Open a replay to plot its telemetry."));
             return;
         };
@@ -126,7 +126,7 @@ impl Module for TelemetryModule {
             }
         };
         let focus_totals = totals.get(&run_key(session, focus)).cloned().unwrap_or_default();
-        let now_x = x_of(focus, session.playback.time_ms);
+        let now_x = x_of(focus, session.playback().time_ms);
         let end_x = if by_distance { focus_totals.last().copied().unwrap_or(1.0) as f64 / 1000.0 } else { session.duration_ms() / 1000.0 };
         let axis_text = move |x: f64| if by_distance { format!("{x:.2} km") } else { format_race_time((x * 1000.0) as i64) };
         let mut seek = None;
@@ -151,7 +151,7 @@ impl Module for TelemetryModule {
                         };
                         Some(format!("{name}\n{}\n{:.3}", axis_text(p.x), p.y))
                     });
-                let follow = self.follow && session.playback.playing;
+                let follow = self.follow && session.playback().playing;
                 let response = plot.show(ui, |plot_ui| {
                     self.draw(plot_ui, *graph, session, focus, &runs, &x_of);
                     plot_ui.vline(VLine::new("", now_x).color(Color32::WHITE).width(1.5));
@@ -178,7 +178,7 @@ impl Module for TelemetryModule {
         });
 
         if let Some(t) = seek {
-            session.playback.playing = false;
+            session.pause();
             session.seek(t);
         }
     }
@@ -187,7 +187,7 @@ impl Module for TelemetryModule {
 impl TelemetryModule {
     fn cache_gaps(&mut self, session: &Session, focus: usize, runs: &[usize]) {
         // Drop pairs whose runs were closed, so a later file can never pick up a stale series
-        let live: std::collections::HashSet<RunKey> = (0..session.runs.len()).map(|r| run_key(session, r)).collect();
+        let live: std::collections::HashSet<RunKey> = (0..session.runs().len()).map(|r| run_key(session, r)).collect();
         self.gaps.retain(|(a, b), _| live.contains(a) && live.contains(b));
         let focus_key = run_key(session, focus);
         for &run in runs.iter().filter(|&&r| r != focus) {
@@ -202,7 +202,7 @@ impl TelemetryModule {
             let Some(totals) = self.totals.get(&run_key(session, run)) else { continue };
             let samples = &session.ghost(run).samples;
             let t = time_at_distance(samples, totals, meters as f32);
-            let track = session.runs[run].track.as_ref();
+            let track = session.runs()[run].track.as_ref();
             let value = match graph {
                 Graph::Speed => speed_at(samples, t).map(f64::from),
                 Graph::Rpm => sample_at(samples, t).map(|s| s.rpm as f64),
@@ -214,14 +214,14 @@ impl TelemetryModule {
                 Graph::Gap | Graph::Wheels => None,
             };
             if let Some(y) = value {
-                plot_ui.points(Points::new("", vec![[meters / 1000.0, y]]).radius(4.0).color(session.runs[run].color));
+                plot_ui.points(Points::new("", vec![[meters / 1000.0, y]]).radius(4.0).color(session.runs()[run].color));
             }
         }
     }
 
     fn draw(&self, plot_ui: &mut egui_plot::PlotUi, graph: Graph, session: &Session, focus: usize, runs: &[usize], x_of: &dyn Fn(usize, f64) -> f64) {
         for &run in runs {
-            let r = &session.runs[run];
+            let r = &session.runs()[run];
             let ghost = session.ghost(run);
             let color = r.color;
             let name = r.label.as_str();

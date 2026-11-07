@@ -41,22 +41,22 @@ impl Module for GbxInspectModule {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, _wgpu: Option<&tmtools_core::RenderState>) {
-        if session.files.is_empty() {
+        if session.files().is_empty() {
             ui.centered_and_justified(|ui| ui.label("Open any .Gbx file to inspect it."));
             return;
         }
-        self.file = self.file.min(session.files.len() - 1);
+        self.file = self.file.min(session.files().len() - 1);
 
         tmtools_core::toolbar(ui, |ui| {
             ui.label("File");
             // Map names first; the file name tells apart replays of the same map
             let label = |f: &tmtools_core::LoadedFile| if f.title() == f.name { f.name.clone() } else { format!("{} ({})", f.title(), f.name) };
-            egui::ComboBox::from_id_salt("gbxinspect-file").selected_text(label(&session.files[self.file])).show_ui(ui, |ui| {
-                for (i, f) in session.files.iter().enumerate() {
+            egui::ComboBox::from_id_salt("gbxinspect-file").selected_text(label(&session.files()[self.file])).show_ui(ui, |ui| {
+                for (i, f) in session.files().iter().enumerate() {
                     ui.selectable_value(&mut self.file, i, label(f));
                 }
             });
-            let has_map = session.files[self.file].replay.as_ref().is_ok_and(|r| r.embedded_map.is_some());
+            let has_map = session.files()[self.file].replay.as_ref().is_ok_and(|r| r.embedded_map.is_some());
             if !has_map {
                 self.embedded = false;
             }
@@ -64,7 +64,7 @@ impl Module for GbxInspectModule {
         });
         ui.add_space(6.0);
 
-        let file = &session.files[self.file];
+        let file = &session.files()[self.file];
         let source = (Arc::as_ptr(&file.bytes) as usize, self.embedded);
         if self.inspection.as_ref().is_none_or(|i| i.source != source) {
             let bytes: &[u8] = if self.embedded {

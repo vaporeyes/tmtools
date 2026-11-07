@@ -46,7 +46,7 @@ struct GainCache {
 const GAIN_WINDOW_MS: i32 = 400;
 
 fn run_identity(session: &Session, run: usize) -> usize {
-    (std::sync::Arc::as_ptr(&session.files[session.runs[run].file].bytes) as usize) ^ session.runs[run].ghost
+    (std::sync::Arc::as_ptr(&session.files()[session.runs()[run].file].bytes) as usize) ^ session.runs()[run].ghost
 }
 
 impl Default for TrajMapModule {
@@ -96,7 +96,7 @@ impl Module for TrajMapModule {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, _wgpu: Option<&tmtools_core::RenderState>) {
-        let Some(focus) = session.focus else {
+        let Some(focus) = session.focus() else {
             ui.centered_and_justified(|ui| ui.label("Open a replay to see its racing line."));
             return;
         };
@@ -122,11 +122,11 @@ impl Module for TrajMapModule {
         }
         ui.horizontal(|ui| {
             ui.label("Color by");
-            let selected = self.reference.map_or("speed".to_owned(), |r| format!("time vs {}", session.runs[r].label));
+            let selected = self.reference.map_or("speed".to_owned(), |r| format!("time vs {}", session.runs()[r].label));
             egui::ComboBox::from_id_salt("trajmap-color").selected_text(selected).show_ui(ui, |ui| {
                 ui.selectable_value(&mut self.reference, None, "speed");
                 for &r in same_map.iter().filter(|&&r| r != focus) {
-                    ui.selectable_value(&mut self.reference, Some(r), format!("time vs {}", session.runs[r].label));
+                    ui.selectable_value(&mut self.reference, Some(r), format!("time vs {}", session.runs()[r].label));
                 }
             });
         });
@@ -160,7 +160,7 @@ impl Module for TrajMapModule {
                 self.view.zoom_about(zoom, anchor, center);
             }
         }
-        let now = session.playback.time_ms as f32;
+        let now = session.playback().time_ms as f32;
         if self.follow {
             if let Some(p) = position_at(&session.ghost(focus).samples, now) {
                 self.view.center = [p.x, p.z];
@@ -178,7 +178,7 @@ impl Module for TrajMapModule {
         // Other runs first in their colors, the focused run on top colored by speed
         for &run in runs.iter().filter(|&&r| r != focus) {
             let points: Vec<Pos2> = session.ghost(run).samples.iter().map(|s| to_screen(xz(s))).collect();
-            painter.add(Shape::line(points, Stroke::new(1.5, session.runs[run].color.gamma_multiply(0.8))));
+            painter.add(Shape::line(points, Stroke::new(1.5, session.runs()[run].color.gamma_multiply(0.8))));
         }
         let focus_samples = &session.ghost(focus).samples;
         let (min_speed, max_speed) = focus_samples.iter().fold((f32::MAX, 0.0f32), |(lo, hi), s| (lo.min(s.speed_kmh), hi.max(s.speed_kmh)));
@@ -201,7 +201,7 @@ impl Module for TrajMapModule {
             if let Some(p) = position_at(&session.ghost(run).samples, now) {
                 let at = to_screen([p.x, p.z]);
                 let radius = if run == focus { 6.0 } else { 4.5 };
-                painter.circle(at, radius, session.runs[run].color, Stroke::new(1.5, Color32::BLACK));
+                painter.circle(at, radius, session.runs()[run].color, Stroke::new(1.5, Color32::BLACK));
             }
         }
 
@@ -239,7 +239,7 @@ impl Module for TrajMapModule {
                 }
                 let tick = tmreplay::track::tick_of(t as f64);
                 let speed = tmreplay::gap::speed_at(focus_samples, t).unwrap_or(0.0);
-                let inputs = session.runs[focus].track.as_ref().map_or(String::new(), |track| {
+                let inputs = session.runs()[focus].track.as_ref().map_or(String::new(), |track| {
                     let steer = track.steer_at(tick);
                     let gas = if track.value_at(Channel::Gas, tick) > 0.0 { "gas" } else { "no gas" };
                     let brake = if track.value_at(Channel::Brake, tick) > 0.0 { ", braking" } else { "" };
@@ -255,9 +255,9 @@ impl Module for TrajMapModule {
                         (Some(gap), Some(rate)) => {
                             let side = if gap >= 0.0 { "ahead of" } else { "behind" };
                             let trend = if rate >= 0.0 { "gaining" } else { "losing" };
-                            format!("\n{:.2} s {side} {}, {trend} {:.0} ms per s", gap.abs() / 1000.0, session.runs[r].label, rate.abs())
+                            format!("\n{:.2} s {side} {}, {trend} {:.0} ms per s", gap.abs() / 1000.0, session.runs()[r].label, rate.abs())
                         }
-                        _ => format!("\nno gap to {} here", session.runs[r].label),
+                        _ => format!("\nno gap to {} here", session.runs()[r].label),
                     }
                 });
                 response.clone().on_hover_text_at_pointer(format!("{}  {:.0} km/h{inputs}{versus}\n{action}", format_race_time(tick as i64), speed));
@@ -275,7 +275,7 @@ impl Module for TrajMapModule {
             session.splits.entry(key).or_default().push(p);
         }
         if let Some(t) = seek {
-            session.playback.playing = false;
+            session.pause();
             session.seek(t);
         }
     }
@@ -342,7 +342,7 @@ impl TrajMapModule {
     fn draw_markers(&self, painter: &egui::Painter, session: &Session, run: usize, to_screen: &impl Fn([f32; 2]) -> Pos2) {
         let samples = &session.ghost(run).samples;
         let at = |t: i32| position_at(samples, t as f32).map(|p| to_screen([p.x, p.z]));
-        if let Some(track) = &session.runs[run].track {
+        if let Some(track) = &session.runs()[run].track {
             if self.show_brakes {
                 for hold in track.holds(Channel::Brake) {
                     if let Some(p) = at(hold.start_ms) {
@@ -392,8 +392,8 @@ fn gain_legend(ui: &mut egui::Ui, session: &Session, reference: usize, scale: f3
             ui.painter().rect_filled(Rect::from_min_size(Pos2::new(x0, rect.top()), Vec2::new(5.0, 10.0)), 0.0, color);
         }
         ui.label(format!("gaining {scale:.0} ms/s against"));
-        color_swatch(ui, session.runs[reference].color);
-        ui.label(&session.runs[reference].label);
+        color_swatch(ui, session.runs()[reference].color);
+        ui.label(&session.runs()[reference].label);
     });
 }
 
@@ -401,7 +401,7 @@ fn legend(ui: &mut egui::Ui, session: &Session, focus: usize) {
     let samples = &session.ghost(focus).samples;
     let (lo, hi) = samples.iter().fold((f32::MAX, 0.0f32), |(lo, hi), s| (lo.min(s.speed_kmh), hi.max(s.speed_kmh)));
     ui.horizontal(|ui| {
-        color_swatch(ui, session.runs[focus].color);
+        color_swatch(ui, session.runs()[focus].color);
         ui.label(format!("{} km/h", lo.min(hi).round()));
         let (rect, _) = ui.allocate_exact_size(Vec2::new(140.0, 10.0), Sense::hover());
         for i in 0..28 {

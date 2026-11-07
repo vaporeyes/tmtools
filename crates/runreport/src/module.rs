@@ -66,7 +66,7 @@ impl Module for RunReportModule {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, _wgpu: Option<&RenderState>) {
-        let Some(focus) = session.focus else {
+        let Some(focus) = session.focus() else {
             ui.centered_and_justified(|ui| ui.label("Open a replay to see its report."));
             return;
         };
@@ -84,7 +84,7 @@ impl Module for RunReportModule {
             })
             .inner;
         if let Some(t) = seek {
-            session.playback.playing = false;
+            session.pause();
             session.seek(t as f64);
         }
     }
@@ -94,7 +94,7 @@ impl RunReportModule {
     fn export_section(&mut self, ui: &mut egui::Ui, session: &Session, focus: usize) {
         tmtools_core::toolbar(ui, |ui| {
             ui.strong("Export the focused run:");
-            let has_inputs = session.runs[focus].track.is_some();
+            let has_inputs = session.runs()[focus].track.is_some();
             let mut chosen = None;
             if ui.add_enabled(has_inputs, egui::Button::new("Inputs CSV...")).on_hover_text("Every recorded input event with its time, tick, and value").clicked() {
                 chosen = Some(Export::InputsCsv);
@@ -117,7 +117,7 @@ impl RunReportModule {
     /// The focused run's braking zones and turns; returns a time to seek to when a row's start is clicked
     fn event_table(&mut self, ui: &mut egui::Ui, session: &Session, focus: usize) -> Option<f32> {
         ui.heading("Braking and turns");
-        let Some(track) = session.runs[focus].track.as_ref() else {
+        let Some(track) = session.runs()[focus].track.as_ref() else {
             ui.label("The focused run has no recorded inputs.");
             return None;
         };
@@ -186,7 +186,7 @@ fn save(session: &Session, focus: usize, kind: Export) -> String {
     let Some(path) = rfd::FileDialog::new().set_file_name(format!("{stem}-{suffix}.{extension}")).add_filter(filter, &[extension]).save_file() else {
         return "Export cancelled.".into();
     };
-    let content = match (kind, session.runs[focus].track.as_ref()) {
+    let content = match (kind, session.runs()[focus].track.as_ref()) {
         (Export::InputsCsv, _) => tmreplay::export::inputs_csv(&ghost.inputs),
         (Export::TasScript, Some(track)) => {
             let title = format!("{} on {}", tmreplay::strip_formatting(player), tmreplay::strip_formatting(map));
@@ -216,8 +216,8 @@ fn runs_table(ui: &mut egui::Ui, session: &Session, focus: usize) {
             let seconds = ghost.duration_ms() as f32 / 1000.0;
             let top = ghost.samples.iter().map(|s| s.speed_kmh).fold(0.0f32, f32::max);
             ui.horizontal(|ui| {
-                color_swatch(ui, session.runs[run].color);
-                let label = RichText::new(&session.runs[run].label);
+                color_swatch(ui, session.runs()[run].color);
+                let label = RichText::new(&session.runs()[run].label);
                 ui.label(if run == focus { label.strong() } else { label });
             });
             ui.label(ghost.race_time_ms.map_or("-".into(), |t| format_race_time(t as i64)));
@@ -271,8 +271,8 @@ fn sector_table(ui: &mut egui::Ui, session: &Session, focus: usize) -> Option<f3
 
         for (row, &run) in runs.iter().enumerate() {
             ui.horizontal(|ui| {
-                color_swatch(ui, session.runs[run].color);
-                let label = RichText::new(&session.runs[run].label);
+                color_swatch(ui, session.runs()[run].color);
+                let label = RichText::new(&session.runs()[run].label);
                 ui.label(if run == focus { label.strong() } else { label });
             });
             for (i, sector) in sectors[row].iter().enumerate() {

@@ -151,7 +151,7 @@ impl Module for ReplayViewModule {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session, wgpu: Option<&RenderState>) {
-        let Some(focus) = session.focus else {
+        let Some(focus) = session.focus() else {
             self.map_only(ui, session, wgpu);
             return;
         };
@@ -201,7 +201,7 @@ impl Module for ReplayViewModule {
             }
         }
 
-        let now = session.playback.time_ms as f32;
+        let now = session.playback().time_ms as f32;
         let samples = &session.ghost(focus).samples;
         let Some((car_pos, car_rot)) = car_pose(samples, now) else {
             ui.label("This run has no samples to show.");
@@ -234,7 +234,7 @@ impl Module for ReplayViewModule {
         if self.show_lines {
             for &run in &runs {
                 if run == focus && self.pedal_colors {
-                    for (pedal, points) in pedal_stretches(&session.ghost(run).samples, session.runs[run].track.as_ref()) {
+                    for (pedal, points) in pedal_stretches(&session.ghost(run).samples, session.runs()[run].track.as_ref()) {
                         for pair in points.windows(2) {
                             if let Some(seg) = pr.segment(v3(pair[0]) + Vec3::Y * 0.2, v3(pair[1]) + Vec3::Y * 0.2) {
                                 painter.line_segment(seg, Stroke::new(2.5, pedal_color(pedal)));
@@ -243,7 +243,7 @@ impl Module for ReplayViewModule {
                     }
                     continue;
                 }
-                let (color, width) = if run == focus { (session.runs[run].color, 2.5) } else { (session.runs[run].color.gamma_multiply(0.6), 1.5) };
+                let (color, width) = if run == focus { (session.runs()[run].color, 2.5) } else { (session.runs()[run].color.gamma_multiply(0.6), 1.5) };
                 let points: Vec<Vec3> = session.ghost(run).samples.iter().map(|s| v3(s.position) + Vec3::Y * 0.2).collect();
                 for pair in points.windows(2) {
                     if let Some(seg) = pr.segment(pair[0], pair[1]) {
@@ -257,7 +257,7 @@ impl Module for ReplayViewModule {
             runs.iter().filter_map(|&r| car_pose(&session.ghost(r).samples, now).map(|(p, q)| (pr.depth(p), r, p, q))).collect();
         cars.sort_by(|a, b| b.0.total_cmp(&a.0));
         for (_, run, p, q) in cars {
-            draw_car(&painter, &pr, p, q, session.runs[run].color, run == focus);
+            draw_car(&painter, &pr, p, q, session.runs()[run].color, run == focus);
         }
 
         hud(&painter, rect, session, focus, now);
@@ -272,7 +272,7 @@ impl ReplayViewModule {
     /// wireframe view is drawn instead
     /// With no replay open, a loaded map file on its own from above: orbit to look around, wheel to zoom
     fn map_only(&mut self, ui: &mut egui::Ui, session: &Session, wgpu: Option<&RenderState>) {
-        let map = session.files.iter().filter(|f| f.replay.is_err()).find_map(|f| tmreplay::parse_challenge(&f.bytes).ok());
+        let map = session.files().iter().filter(|f| f.replay.is_err()).find_map(|f| tmreplay::parse_challenge(&f.bytes).ok());
         let (Some(map), Some(rs)) = (map, wgpu.filter(|_| session.assets.is_some())) else {
             ui.centered_and_justified(|ui| ui.label("Open a replay to watch it, or a map file with the game assets set to look at it."));
             return;
@@ -349,7 +349,7 @@ impl ReplayViewModule {
         }
         let Some(ready) = self.ready.as_ref().filter(|r| r.key == key) else { return false };
 
-        let now = session.playback.time_ms as f32;
+        let now = session.playback().time_ms as f32;
         // Each car's parts in the world: its pose times each part, with the wheels posed from the samples
         let cars = runs
             .iter()
@@ -418,7 +418,7 @@ fn racing_lines(session: &Session, runs: &[usize], focus: usize, pedal_colors: b
     let lift = |p: tmreplay::Vec3| Vec3::new(p.x, p.y + 0.15, p.z);
     for &run in runs {
         if run == focus && pedal_colors {
-            for (pedal, points) in pedal_stretches(&session.ghost(run).samples, session.runs[run].track.as_ref()) {
+            for (pedal, points) in pedal_stretches(&session.ghost(run).samples, session.runs()[run].track.as_ref()) {
                 let c = pedal_color(pedal);
                 let color = [c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0, 0.95];
                 let points: Vec<Vec3> = points.into_iter().map(lift).collect();
@@ -426,7 +426,7 @@ fn racing_lines(session: &Session, runs: &[usize], focus: usize, pedal_colors: b
             }
             continue;
         }
-        let c = session.runs[run].color;
+        let c = session.runs()[run].color;
         let (alpha, width) = if run == focus { (0.9, 3.5) } else { (0.6, 2.0) };
         let color = [c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0, alpha];
         let points: Vec<Vec3> = session.ghost(run).samples.iter().map(|s| Vec3::new(s.position.x, s.position.y + 0.15, s.position.z)).collect();
@@ -521,7 +521,7 @@ fn hud(painter: &egui::Painter, rect: Rect, session: &Session, focus: usize, now
         Color32::from_gray(190),
     );
 
-    let Some(track) = &session.runs[focus].track else { return };
+    let Some(track) = &session.runs()[focus].track else { return };
     let key = |center: Pos2, amount: f32, lit: Color32, label: &str| {
         let r = Rect::from_center_size(center, Vec2::splat(24.0));
         painter.rect_filled(r, 4.0, Color32::from_white_alpha(30));

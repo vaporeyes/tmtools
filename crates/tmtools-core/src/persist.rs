@@ -71,9 +71,7 @@ impl Session {
         for (key, points) in &saved.splits {
             self.splits.insert(key.clone(), points.iter().map(|p| Vec3 { x: p[0], y: p[1], z: p[2] }).collect());
         }
-        if crate::SPEEDS.contains(&saved.speed) {
-            self.playback.speed = saved.speed;
-        }
+        self.set_speed(saved.speed);
         if files {
             let mut opened: Vec<Option<usize>> = Vec::new();
             for path in &saved.files {

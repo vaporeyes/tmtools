@@ -28,7 +28,7 @@ impl eframe::App for TmtoolsApp {
         let ctx = ui.ctx().clone();
         let wgpu = frame.wgpu_render_state().cloned();
         self.session.advance(ctx.input(|i| i.stable_dt) as f64);
-        if self.session.playback.playing {
+        if self.session.playback().playing {
             ctx.request_repaint();
         }
         if self.session.poll_loads() {
@@ -151,27 +151,29 @@ fn runs_panel(ui: &mut egui::Ui, session: &mut Session) -> bool {
     }
     ui.add_space(4.0);
 
-    if session.files.is_empty() {
+    if session.files().is_empty() {
         ui.add_space(20.0);
         ui.vertical_centered(|ui| ui.label(egui::RichText::new("Drop .Replay.Gbx files here\nor use Open or Library.").color(WEAK)));
         return library;
     }
 
-    if session.runs.len() > 1 {
+    if session.runs().len() > 1 {
         ui.horizontal(|ui| {
             if ui.small_button("Select all").on_hover_text("Show every run").clicked() {
-                session.runs.iter_mut().for_each(|r| r.visible = true);
+                session.set_all_visible(true);
             }
             if ui.small_button("Select none").on_hover_text("Hide every run").clicked() {
-                session.runs.iter_mut().for_each(|r| r.visible = false);
+                session.set_all_visible(false);
             }
         });
         ui.add_space(4.0);
     }
 
     let mut remove = None;
+    // Clicks on a run, applied after the list: (run, Some(visible)) for its checkbox, (run, None) to focus it
+    let mut clicked = None;
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-        for (f, file) in session.files.iter().enumerate() {
+        for (f, file) in session.files().iter().enumerate() {
             // One card per file: its map, where it comes from, and its runs
             egui::Frame::new().fill(INK_RAISED).corner_radius(6).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -189,17 +191,19 @@ fn runs_panel(ui: &mut egui::Ui, session: &mut Session) -> bool {
                     Err(_) => "Not a replay; open it in the Gbx Inspector".into(),
                 };
                 ui.label(egui::RichText::new(detail.trim()).small().weak());
-                for r in 0..session.runs.len() {
-                    if session.runs[r].file != f {
+                for r in 0..session.runs().len() {
+                    if session.runs()[r].file != f {
                         continue;
                     }
                     ui.horizontal(|ui| {
-                        ui.checkbox(&mut session.runs[r].visible, "").on_hover_text("Show this run");
-                        color_swatch(ui, session.runs[r].color);
-                        let focused = session.focus == Some(r);
-                        if ui.selectable_label(focused, &session.runs[r].label).on_hover_text("Focus this run").clicked() {
-                            session.focus = Some(r);
-                            session.runs[r].visible = true;
+                        let mut visible = session.runs()[r].visible;
+                        if ui.checkbox(&mut visible, "").on_hover_text("Show this run").changed() {
+                            clicked = Some((r, Some(visible)));
+                        }
+                        color_swatch(ui, session.runs()[r].color);
+                        let focused = session.focus() == Some(r);
+                        if ui.selectable_label(focused, &session.runs()[r].label).on_hover_text("Focus this run").clicked() {
+                            clicked = Some((r, None));
                         }
                     });
                 }
@@ -207,6 +211,11 @@ fn runs_panel(ui: &mut egui::Ui, session: &mut Session) -> bool {
             ui.add_space(6.0);
         }
     });
+    match clicked {
+        Some((r, Some(visible))) => session.set_visible(r, visible),
+        Some((r, None)) => session.set_focus(r),
+        None => {}
+    }
     if let Some(f) = remove {
         session.remove_file(f);
     }
@@ -243,7 +252,7 @@ fn playback_bar(ui: &mut egui::Ui, session: &mut Session) {
         if icon_button(ui, Icon::StepBack, 26.0, false, "Back one tick (,)").clicked() {
             session.step_ticks(-1);
         }
-        let (icon, tip) = if session.playback.playing { (Icon::Pause, "Pause (Space)") } else { (Icon::Play, "Play (Space)") };
+        let (icon, tip) = if session.playback().playing { (Icon::Pause, "Pause (Space)") } else { (Icon::Play, "Play (Space)") };
         if icon_button(ui, icon, 36.0, true, tip).clicked() {
             session.toggle_play();
         }
@@ -258,9 +267,12 @@ fn playback_bar(ui: &mut egui::Ui, session: &mut Session) {
         ui.label(egui::RichText::new(format!("tick {}", session.tick_ms() / 10)).small().color(WEAK));
         ui.add_space(8.0);
 
-        egui::ComboBox::from_id_salt("speed").width(64.0).selected_text(format!("{}x", session.playback.speed)).show_ui(ui, |ui| {
+        let current = session.playback().speed;
+        egui::ComboBox::from_id_salt("speed").width(64.0).selected_text(format!("{current}x")).show_ui(ui, |ui| {
             for speed in SPEEDS {
-                ui.selectable_value(&mut session.playback.speed, speed, format!("{speed}x"));
+                if ui.selectable_label(current == speed, format!("{speed}x")).clicked() {
+                    session.set_speed(speed);
+                }
             }
         });
         ui.add_space(8.0);
@@ -277,15 +289,15 @@ fn timeline(ui: &mut egui::Ui, session: &mut Session, duration: f64) {
     let x_of = |ms: f64| track.left() + (ms / duration.max(1.0)) as f32 * track.width();
 
     painter.rect_filled(track, 3.0, INK_SOFT);
-    let done = egui::Rect::from_min_max(track.min, egui::pos2(x_of(session.playback.time_ms), track.max.y));
+    let done = egui::Rect::from_min_max(track.min, egui::pos2(x_of(session.playback().time_ms), track.max.y));
     painter.rect_filled(done, 3.0, FINISH.gamma_multiply(0.8));
-    if let Some(focus) = session.focus {
+    if let Some(focus) = session.focus() {
         for t in session.ghost(focus).checkpoints.iter().filter_map(|c| c.time_ms) {
             let x = x_of(t as f64);
             painter.line_segment([egui::pos2(x, track.top() - 6.0), egui::pos2(x, track.bottom() + 6.0)], egui::Stroke::new(2.0, TEXT));
         }
     }
-    painter.circle(egui::pos2(x_of(session.playback.time_ms), track.center().y), 8.0, FINISH, egui::Stroke::new(2.0, INK));
+    painter.circle(egui::pos2(x_of(session.playback().time_ms), track.center().y), 8.0, FINISH, egui::Stroke::new(2.0, INK));
 
     if let Some(pos) = response.interact_pointer_pos().filter(|_| response.clicked() || response.dragged()) {
         let fraction = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0) as f64;
@@ -358,8 +370,8 @@ fn start_session(app: &mut TmtoolsApp, saved: Option<SavedSession>, args: Args) 
         let wanted = name.to_lowercase();
         app.active = app.modules.iter().position(|m| m.name().to_lowercase().contains(&wanted)).unwrap_or(app.active);
     }
-    if let Some(f) = args.focus.filter(|&f| f < app.session.runs.len()) {
-        app.session.focus = Some(f);
+    if let Some(f) = args.focus {
+        app.session.set_focus(f);
     }
     if let Some(t) = args.time {
         app.session.seek(t);
