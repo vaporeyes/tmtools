@@ -232,7 +232,10 @@ impl<'a> Reader<'a> {
 
     fn id_string(&mut self, index: u32) -> Result<String> {
         if index & 0x3FFF_FFFF != 0 {
-            return Ok(self.ids.get(&index).cloned().unwrap_or_default());
+            return match self.ids.get(&index) {
+                Some(text) => Ok(text.clone()),
+                None => format_err(format!("ID 0x{index:08X} refers to a string that wasn't read")),
+            };
         }
         let value = self.string()?;
         let slot = index.wrapping_add(self.ids.len() as u32 + 1);
@@ -356,6 +359,12 @@ mod tests {
         assert_eq!(r.id_as_string().unwrap(), "Stadium");
         assert_eq!(r.id().unwrap(), "Stadium");
         assert_eq!(r.id().unwrap(), "");
+    }
+
+    #[test]
+    fn ids_referring_to_unread_strings_are_an_error() {
+        let data = bytes(&[&3i32.to_le_bytes(), &0x4000_0005u32.to_le_bytes()]);
+        assert!(Reader::new(&data).id().is_err());
     }
 
     #[test]
