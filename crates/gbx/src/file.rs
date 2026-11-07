@@ -248,6 +248,10 @@ pub fn read_chunks<'a>(r: &mut Reader<'a>, mut handle: impl FnMut(u32, &mut Read
             if end > r.len() {
                 return format_err(format!("chunk 0x{id:08X} runs past the end of the body"));
             }
+            // A handler that read past the stated size misread the chunk, and the next chunk would start inside it
+            if r.pos > end {
+                return format_err(format!("chunk 0x{id:08X} was read {} bytes past its end", r.pos - end));
+            }
             r.pos = end;
         }
         if let (Some(i), Some(trace)) = (traced, r.trace.as_mut()) {
@@ -303,6 +307,14 @@ mod tests {
         let body = le(&[0x0309_3015, 0x0309_3099]);
         let mut r = Reader::new(&body);
         assert!(!read_chunks(&mut r, |_, _| Ok(Some(Flow::Stop))).unwrap());
+    }
+
+    #[test]
+    fn handlers_that_read_past_a_skippable_chunk_are_an_error() {
+        // The chunk says 4 bytes, but its handler reads two ints, the second being the end marker
+        let body = le(&[0x0309_3010, SKIP, 4, 1, FACADE]);
+        let mut r = Reader::new(&body);
+        assert!(read_chunks(&mut r, |_, r| r.i32().and(r.i32()).map(|_| Some(Flow::Continue))).is_err());
     }
 
     #[test]
