@@ -148,6 +148,16 @@ mod tests {
     }
 
     #[test]
+    fn seeking_to_nan_still_saves_a_readable_session() {
+        // JSON has no NaN: serde writes null, which doesn't read back as a number, and the whole session was lost
+        let mut s = session_with(&[Some("/a.Replay.Gbx")]);
+        s.seek(1000.0);
+        s.seek(f64::NAN);
+        let back = SavedSession::from_json(&s.save().to_json()).expect("the saved session reads back");
+        assert_eq!((back.files.len(), back.time_ms), (1, 1000.0));
+    }
+
+    #[test]
     fn reads_settings_back() {
         let mut settings = Settings::new();
         settings.insert("view.ghosts".into(), "true".into());

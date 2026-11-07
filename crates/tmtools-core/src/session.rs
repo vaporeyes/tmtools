@@ -292,7 +292,11 @@ impl Session {
         self.playback.playing = !self.playback.playing;
     }
 
+    /// Moves the clock, kept within the runs; a NaN time (say from `--time NaN`) is ignored, as clamping keeps it NaN
     pub fn seek(&mut self, time_ms: f64) {
+        if time_ms.is_nan() {
+            return;
+        }
         self.playback.time_ms = time_ms.clamp(0.0, self.duration_ms());
     }
 
